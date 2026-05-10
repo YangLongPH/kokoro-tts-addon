@@ -1,10 +1,14 @@
-torch
+# Common (always needed)
 numpy
 scipy
 soundfile
 flask
 flask-cors
-TTS
-huggingface_hub
-edge-tts
-transformers==4.40.2
+torch
+regex
+transformers
+
+# LightSpeed backend (default) — no extra packages, weights auto-downloaded
+# vietTTS backend — pip install git+https://github.com/NTT123/vietTTS.git jax jaxlib
+# viXTTS backend  — pip install TTS huggingface_hub transformers==4.40.2 edge-tts
+# edge_tts backend — pip install edge-tts

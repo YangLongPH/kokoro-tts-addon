@@ -416,18 +416,20 @@ async function populateDropdownsFromSever() {
             langSelect.innerHTML = '';
 
             // Populate Voice dropdown
+            const voiceLabels = data.voice_labels || {};
             data.available_voices.forEach(voiceCode => {
                 const option = document.createElement('option');
                 option.value = voiceCode;
-                option.textContent = VOICE_DISPLAY_NAMES[voiceCode] || voiceCode; // Use display name or code
+                option.textContent = voiceLabels[voiceCode] || VOICE_DISPLAY_NAMES[voiceCode] || voiceCode;
                 voiceSelect.appendChild(option);
             });
 
             // Populate Language dropdown
+            const langLabels = data.language_labels || {};
             data.available_languages.forEach(langCode => {
                 const option = document.createElement('option');
                 option.value = langCode;
-                option.textContent = LANGUAGE_DISPLAY_NAMES[langCode] || langCode; // Use display name or code
+                option.textContent = langLabels[langCode] || LANGUAGE_DISPLAY_NAMES[langCode] || langCode;
                 langSelect.appendChild(option);
             });
 

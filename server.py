@@ -1,304 +1,521 @@
 #!/usr/bin/env python3
 """
-Vietnamese TTS Server using capleaf/viXTTS (XTTS-v2 fine-tune)
+Kokoro TTS Server
+Switch models by changing ACTIVE_BACKEND below.
 """
 import io
 import re
 import logging
 import numpy as np
-from pathlib import Path
-import torch
 import soundfile as sf
+from pathlib import Path
 from flask import Flask, request, jsonify, send_file, Response
 from flask_cors import CORS
 
 app = Flask(__name__)
 CORS(app)
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 
-MODEL_ID = "capleaf/viXTTS"
-SPEAKER_WAV = Path(__file__).parent / "reference_speaker.wav"
-SAMPLE_RATE = 24000
+# ─── Config ───────────────────────────────────────────────────────────────────
+# Options: 'vietTTS' | 'viXTTS' | 'edge_tts'
+ACTIVE_BACKEND = 'mms_tts'
+# ──────────────────────────────────────────────────────────────────────────────
 
-tts_model = None
-tts_config = None
-_speaker_latents = None
 
-VOICES = {
-    'vi_default': 'Vietnamese (Default)',
+# ─── Backend Abstraction ──────────────────────────────────────────────────────
+
+ALL_LANGUAGE_LABELS = {
+    'vi': '🇻🇳 Vietnamese', 'en': '🇺🇸 English', 'fr': '🇫🇷 French',
+    'es': '🇪🇸 Spanish',   'de': '🇩🇪 German',  'it': '🇮🇹 Italian',
+    'pt': '🇧🇷 Portuguese', 'zh-cn': '🇨🇳 Chinese', 'ja': '🇯🇵 Japanese',
+    'ko': '🇰🇷 Korean',    'hi': '🇮🇳 Hindi',
 }
 
-def split_text(text, max_chars=220):
-    """Split text into chunks under max_chars, respecting sentence boundaries."""
-    sentences = re.split(r'(?<=[.!?;,])\s+|\n+', text)
-    chunks = []
-    current = ""
-    for sentence in sentences:
-        sentence = sentence.strip()
-        if not sentence:
+
+class TTSBackend:
+    name = 'base'
+    sample_rate = 16000
+    voices = ['vi_default']
+    voice_labels = {}     # code → display name
+    languages = ['vi']
+
+    def load(self):
+        raise NotImplementedError
+
+    def synthesize(self, text: str, voice: str = None, speed: float = 1.0, language: str = 'vi') -> np.ndarray:
+        """Return float32 numpy array at self.sample_rate."""
+        raise NotImplementedError
+
+    def language_labels(self):
+        return {k: ALL_LANGUAGE_LABELS[k] for k in self.languages if k in ALL_LANGUAGE_LABELS}
+
+
+class VietTTSBackend(TTSBackend):
+    """VietTTS by NTT123 — pip install git+https://github.com/NTT123/vietTTS.git jax jaxlib"""
+    name = 'VietTTS'
+    sample_rate = 16000
+    voices = ['vi_female']
+    languages = ['vi']
+
+    def load(self):
+        import re, unicodedata
+        from vietTTS.nat.text2mel import text2mel
+        from vietTTS.hifigan.mel2wave import mel2wave
+        from vietTTS.nat.config import FLAGS
+        self._text2mel = text2mel
+        self._mel2wave = mel2wave
+        self._FLAGS = FLAGS
+        self._re = re
+        self._unicodedata = unicodedata
+        app.logger.info("VietTTS loaded (model weights download on first synthesize call).")
+
+    def _normalize(self, text):
+        re, ud, FLAGS = self._re, self._unicodedata, self._FLAGS
+        text = ud.normalize("NFKC", text).lower().strip()
+        sil = FLAGS.special_phonemes[FLAGS.sil_index]
+        text = re.sub(r"[\n.,:]+", f" {sil} ", text)
+        text = text.replace('"', " ")
+        text = re.sub(r"\s+", " ", text)
+        text = re.sub(r"[.,:;?!]+", f" {sil} ", text)
+        text = re.sub("[ ]+", " ", text)
+        text = re.sub(f"( {sil}+)+ ", f" {sil} ", text)
+        return text.strip()
+
+    def synthesize(self, text, voice=None, speed=1.0, language='vi'):
+        text = self._normalize(text)
+        mel = self._text2mel(text, None, -1)
+        wave = self._mel2wave(mel)
+        return np.array(wave, dtype=np.float32)
+
+
+class ViXTTSBackend(TTSBackend):
+    """capleaf/viXTTS — pip install TTS huggingface_hub transformers==4.40.2 torch soundfile scipy edge-tts"""
+    name = 'viXTTS'
+    sample_rate = 24000
+    voices = ['vi_default']
+    voice_labels = {'vi_default': 'Vietnamese (viXTTS)'}
+    languages = ['vi', 'en', 'fr', 'es', 'de', 'it', 'pt', 'zh-cn', 'ja', 'ko', 'hi']
+
+    def load(self):
+        import torch
+        from pathlib import Path
+        from huggingface_hub import snapshot_download
+        from TTS.tts.configs.xtts_config import XttsConfig
+        from TTS.tts.models.xtts import Xtts
+        import TTS.tts.models.xtts as _xtts_mod
+
+        # Patch: use soundfile instead of TorchCodec
+        def _sf_load(file_path, sample_rate):
+            data, sr = sf.read(str(file_path), dtype='float32')
+            if data.ndim > 1: data = data.mean(axis=1)
+            if sr != sample_rate:
+                from scipy.signal import resample
+                data = resample(data, int(round(len(data) * sample_rate / sr)))
+            return torch.from_numpy(data).unsqueeze(0)
+        _xtts_mod.load_audio = _sf_load
+
+        # Patch: Vietnamese tokenizer support
+        from TTS.tts.layers.xtts.tokenizer import VoiceBpeTokenizer
+        _orig = VoiceBpeTokenizer.preprocess_text
+        def _preprocess(self, txt, lang):
+            return txt.strip() if lang == 'vi' else _orig(self, txt, lang)
+        VoiceBpeTokenizer.preprocess_text = _preprocess
+
+        model_path = snapshot_download("capleaf/viXTTS")
+        config = XttsConfig()
+        config.load_json(str(Path(model_path) / "config.json"))
+        model = Xtts.init_from_config(config)
+        model.load_checkpoint(config, checkpoint_dir=model_path, eval=True)
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        model.to(device)
+
+        speaker_wav = self._ensure_reference_wav()
+        self._latents = model.get_conditioning_latents(
+            audio_path=[speaker_wav],
+            gpt_cond_len=config.gpt_cond_len,
+            max_ref_length=config.max_ref_len,
+            sound_norm_refs=config.sound_norm_refs,
+        )
+        self._model = model
+        self._config = config
+        app.logger.info(f"viXTTS loaded on {device}.")
+
+    def _ensure_reference_wav(self):
+        from pathlib import Path
+        wav = Path(__file__).parent / "reference_speaker.wav"
+        if not wav.exists():
+            import asyncio, edge_tts
+            async def _gen():
+                await edge_tts.Communicate(
+                    "Xin chào, đây là giọng nói mẫu.", "vi-VN-HoaiMyNeural"
+                ).save(str(wav))
+            asyncio.run(_gen())
+        return str(wav)
+
+    def synthesize(self, text, voice=None, speed=1.0, language='vi'):
+        gpt_cond_latent, speaker_embedding = self._latents
+        out = self._model.inference(
+            text=text, language=language,
+            gpt_cond_latent=gpt_cond_latent,
+            speaker_embedding=speaker_embedding,
+            temperature=0.7, length_penalty=1.0,
+            repetition_penalty=10.0, top_k=50, top_p=0.85, speed=speed,
+        )
+        return np.array(out["wav"], dtype=np.float32)
+
+
+class EdgeTTSBackend(TTSBackend):
+    """Microsoft Edge TTS — pip install edge-tts (requires internet)"""
+    name = 'edge_tts'
+    sample_rate = 24000
+    voices = ['vi-VN-HoaiMyNeural', 'vi-VN-NamMinhNeural']
+    languages = ['vi']
+
+    def load(self):
+        import edge_tts  # noqa — verify installed
+        app.logger.info("EdgeTTS backend ready (requires internet).")
+
+    def synthesize(self, text, voice='vi-VN-HoaiMyNeural', speed=1.0, language='vi'):
+        import asyncio, subprocess, tempfile, os, edge_tts
+        voice = voice if voice in self.voices else self.voices[0]
+        rate = f"{int((speed - 1) * 100):+d}%"
+
+        tmp_mp3 = tempfile.mktemp(suffix='.mp3')
+        tmp_wav = tempfile.mktemp(suffix='.wav')
+        try:
+            async def _gen():
+                await edge_tts.Communicate(text, voice, rate=rate).save(tmp_mp3)
+            asyncio.run(_gen())
+
+            # Convert MP3 → WAV using macOS afconvert (no ffmpeg needed)
+            subprocess.run([
+                'afconvert', '-f', 'WAVE', '-d', f'LEI16@{self.sample_rate}',
+                '-c', '1', tmp_mp3, tmp_wav
+            ], check=True, capture_output=True)
+
+            data, _ = sf.read(tmp_wav, dtype='float32')
+            if data.ndim > 1:
+                data = data.mean(axis=1)
+            return data
+        finally:
+            for p in (tmp_mp3, tmp_wav):
+                try: os.unlink(p)
+                except FileNotFoundError: pass
+
+
+class LightSpeedBackend(TTSBackend):
+    """ntt123/Vietnam-female-voice-TTS — LightSpeed VITS, offline, 16 kHz
+    Weights auto-downloaded from HuggingFace on first run (~200 MB).
+    """
+    name = 'LightSpeed'
+    sample_rate = 16000
+    voices = ['vi_female']
+    voice_labels = {'vi_female': 'Vietnamese Female (LightSpeed)'}
+    languages = ['vi']
+
+    _MODEL_DIR = Path(__file__).parent / 'lightspeed'
+    _HF_BASE = 'https://huggingface.co/spaces/ntt123/Vietnam-female-voice-TTS/resolve/main/'
+
+    def load(self):
+        import sys, json, torch
+        from types import SimpleNamespace
+        from pathlib import Path
+
+        model_dir = str(self._MODEL_DIR)
+        if model_dir not in sys.path:
+            sys.path.insert(0, model_dir)
+
+        self._download_weights()
+
+        with open(self._MODEL_DIR / 'config.json', 'rb') as f:
+            hps = json.load(f, object_hook=lambda x: SimpleNamespace(**x))
+        self._hps = hps
+
+        with open(self._MODEL_DIR / 'phone_set.json') as f:
+            phone_set = json.load(f)
+        self._phone_set = phone_set
+        self._sil_idx = phone_set.index('sil')
+
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self._device = device
+
+        from models import DurationNet, SynthesizerTrn
+
+        duration_net = DurationNet(hps.data.vocab_size, 64, 4).to(device)
+        duration_net.load_state_dict(torch.load(
+            str(self._MODEL_DIR / 'duration_model.pth'), map_location=device, weights_only=True))
+        duration_net.eval()
+
+        generator = SynthesizerTrn(
+            hps.data.vocab_size,
+            hps.data.filter_length // 2 + 1,
+            hps.train.segment_size // hps.data.hop_length,
+            **vars(hps.model),
+        ).to(device)
+        del generator.enc_q
+        ckpt = torch.load(str(self._MODEL_DIR / 'gen_630k.pth'), map_location=device, weights_only=True)
+        params = {(k[7:] if k.startswith('module.') else k): v for k, v in ckpt['net_g'].items()}
+        generator.load_state_dict(params, strict=False)
+        del ckpt, params
+        generator.eval()
+
+        self._duration_net = duration_net
+        self._generator = generator
+        app.logger.info(f"LightSpeed loaded on {device}.")
+
+    def _download_weights(self):
+        import urllib.request
+        for fname in ['duration_model.pth', 'gen_630k.pth']:
+            target = self._MODEL_DIR / fname
+            if not target.exists():
+                app.logger.info(f"Downloading {fname} from HuggingFace…")
+                urllib.request.urlretrieve(self._HF_BASE + fname, str(target))
+                app.logger.info(f"Saved {fname}.")
+
+    def _text_to_phone_idx(self, text):
+        import re, unicodedata, regex as _regex
+
+        phone_set = self._phone_set
+        sil_idx = self._sil_idx
+        num_re = _regex.compile(r"([0-9.,]*[0-9])")
+        digits = ["không", "một", "hai", "ba", "bốn", "năm", "sáu", "bảy", "tám", "chín"]
+
+        def read_number(num):
+            if len(num) == 1:
+                return digits[int(num)]
+            elif len(num) == 2 and num.isdigit():
+                n = int(num)
+                end = digits[n % 10]
+                if n == 10: return "mười"
+                if n % 10 == 5: end = "lăm"
+                if n % 10 == 0: return digits[n // 10] + " mươi"
+                elif n < 20: return "mười " + end
+                else:
+                    if n % 10 == 1: end = "mốt"
+                    return digits[n // 10] + " mươi " + end
+            elif len(num) == 3 and num.isdigit():
+                n = int(num)
+                if n % 100 == 0: return digits[n // 100] + " trăm"
+                elif num[1] == "0": return digits[n // 100] + " trăm lẻ " + digits[n % 100]
+                else: return digits[n // 100] + " trăm " + read_number(num[1:])
+            elif "," in num:
+                n1, n2 = num.split(",")
+                return read_number(n1) + " phẩy " + read_number(n2)
+            elif "." in num:
+                parts = num.split(".")
+                if len(parts) == 2:
+                    if parts[1] == "000": return read_number(parts[0]) + " ngàn"
+                    elif parts[1].startswith("00"): return read_number(parts[0]) + " ngàn lẻ " + digits[int(parts[1][2:])]
+                    else: return read_number(parts[0]) + " ngàn " + read_number(parts[1])
+                elif len(parts) == 3:
+                    return read_number(parts[0]) + " triệu " + read_number(parts[1]) + " ngàn " + read_number(parts[2])
+            return num
+
+        text = text.lower()
+        text = unicodedata.normalize("NFKC", text)
+        for ch, rep in [(".", " . "), (",", " , "), (";", " ; "), (":", " : "), ("!", " ! "), ("?", " ? "), ("(", " ( ")]:
+            text = text.replace(ch, rep)
+        text = num_re.sub(r" \1 ", text)
+        words = text.split()
+        words = [read_number(w) if num_re.fullmatch(w) else w for w in words]
+        text = re.sub(r"\s+", " ", " ".join(words)).strip()
+
+        tokens = []
+        for c in text:
+            if c in ":,.!?;(": tokens.append(sil_idx)
+            elif c in phone_set: tokens.append(phone_set.index(c))
+            elif c == " ": tokens.append(0)
+        if not tokens: return [sil_idx, 0, sil_idx]
+        if tokens[0] != sil_idx: tokens = [sil_idx, 0] + tokens
+        if tokens[-1] != sil_idx: tokens = tokens + [0, sil_idx]
+        return tokens
+
+    def synthesize(self, text, voice=None, speed=1.0, language='vi'):
+        import torch
+
+        if len(text) > 500:
+            text = text[:500]
+
+        phone_idx = self._text_to_phone_idx(text)
+        hps = self._hps
+        device = self._device
+
+        phone_length = torch.tensor([len(phone_idx)], dtype=torch.long).to(device)
+        phone_idx_t = torch.tensor([phone_idx], dtype=torch.long).to(device)
+
+        with torch.inference_mode():
+            phone_duration = self._duration_net(phone_idx_t, phone_length)[:, :, 0] * 1000
+
+        phone_duration = torch.where(
+            phone_idx_t == self._sil_idx, torch.clamp_min(phone_duration, 200), phone_duration)
+        phone_duration = torch.where(phone_idx_t == 0, torch.zeros_like(phone_duration), phone_duration)
+
+        end_time = torch.cumsum(phone_duration, dim=-1)
+        start_time = end_time - phone_duration
+        sr, hop = hps.data.sampling_rate, hps.data.hop_length
+        start_frame = start_time / 1000 * sr / hop
+        end_frame   = end_time   / 1000 * sr / hop
+        spec_length = end_frame.max(dim=-1).values
+        pos = torch.arange(0, spec_length.item(), device=device)
+        attn = torch.logical_and(
+            pos[None, :, None] >= start_frame[:, None, :],
+            pos[None, :, None] <  end_frame[:, None, :],
+        ).float()
+
+        with torch.inference_mode():
+            y_hat = self._generator.infer(
+                phone_idx_t, phone_length, spec_length, attn,
+                max_len=None, noise_scale=0.0
+            )[0]
+
+        return y_hat[0, 0].data.cpu().numpy().astype(np.float32)
+
+
+class MMSTTSBackend(TTSBackend):
+    """Meta MMS-TTS Vietnamese — facebook/mms-tts-vie
+    pip install transformers torch
+    Model auto-downloaded from HuggingFace (~500 MB).
+    """
+    name = 'MMS-TTS'
+    sample_rate = 16000
+    voices = ['vi_female']
+    voice_labels = {'vi_female': 'Vietnamese Female (MMS-TTS)'}
+    languages = ['vi']
+
+    def load(self):
+        from transformers import VitsModel, AutoTokenizer
+        import torch
+
+        app.logger.info("Loading facebook/mms-tts-vie (first run downloads ~500 MB)…")
+        self._tokenizer = AutoTokenizer.from_pretrained("facebook/mms-tts-vie")
+        self._model = VitsModel.from_pretrained("facebook/mms-tts-vie")
+        self._model.eval()
+        self._device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self._model.to(self._device)
+        self.sample_rate = self._model.config.sampling_rate
+        app.logger.info(f"MMS-TTS loaded on {self._device}, sample_rate={self.sample_rate}.")
+
+    def synthesize(self, text, voice=None, speed=1.0, language='vi'):
+        import torch
+
+        inputs = self._tokenizer(text, return_tensors='pt')
+        inputs = {k: v.to(self._device) for k, v in inputs.items()}
+
+        with torch.no_grad():
+            output = self._model(**inputs).waveform
+
+        return output.squeeze().cpu().numpy().astype(np.float32)
+
+
+# ─── Backend Registry ─────────────────────────────────────────────────────────
+
+BACKENDS = {
+    'mms_tts':    MMSTTSBackend,
+    'lightspeed': LightSpeedBackend,
+    'vietTTS':    VietTTSBackend,
+    'viXTTS':     ViXTTSBackend,
+    'edge_tts':   EdgeTTSBackend,
+}
+
+backend: TTSBackend = BACKENDS[ACTIVE_BACKEND]()
+
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+
+def split_text(text, max_chars=200):
+    sentences = re.split(r'(?<=[.!?])\s+|\n+', text.strip())
+    chunks, current = [], ''
+    for sent in sentences:
+        sent = sent.strip()
+        if not sent:
             continue
-        if len(current) + len(sentence) + 1 <= max_chars:
-            current = (current + " " + sentence).strip()
+        if len(current) + len(sent) + 1 <= max_chars:
+            current = (current + ' ' + sent).strip()
         else:
             if current:
                 chunks.append(current)
-            if len(sentence) > max_chars:
-                # Force-split sentence by words
-                words = sentence.split()
-                current = ""
-                for word in words:
-                    if len(current) + len(word) + 1 <= max_chars:
-                        current = (current + " " + word).strip()
-                    else:
-                        if current:
-                            chunks.append(current)
-                        current = word
-            else:
-                current = sentence
+            current = sent[:max_chars]
     if current:
         chunks.append(current)
-    return chunks
+    return chunks or [text]
 
-LANGUAGES = {
-    'vi': '🇻🇳 Vietnamese',
-    'en': '🇺🇸 English',
-    'fr': '🇫🇷 French',
-    'es': '🇪🇸 Spanish',
-    'de': '🇩🇪 German',
-    'it': '🇮🇹 Italian',
-    'pt': '🇧🇷 Portuguese',
-    'zh-cn': '🇨🇳 Chinese',
-    'ja': '🇯🇵 Japanese',
-    'ko': '🇰🇷 Korean',
-    'hi': '🇮🇳 Hindi',
-}
-
-
-def ensure_reference_audio():
-    """Return path to reference speaker audio, generating one via edge-tts if missing."""
-    if SPEAKER_WAV.exists():
-        return str(SPEAKER_WAV)
-
-    app.logger.info("reference_speaker.wav not found — generating with edge-tts...")
-    try:
-        import asyncio
-        import edge_tts
-
-        async def _gen():
-            comm = edge_tts.Communicate(
-                "Xin chào, đây là giọng nói mẫu để tổng hợp tiếng nói.",
-                "vi-VN-HoaiMyNeural"
-            )
-            await comm.save(str(SPEAKER_WAV))
-
-        asyncio.run(_gen())
-        app.logger.info(f"Reference audio saved to {SPEAKER_WAV}")
-        return str(SPEAKER_WAV)
-    except Exception as e:
-        raise RuntimeError(
-            f"Could not generate reference audio ({e}). "
-            f"Place a Vietnamese WAV file (3-10 s) at: {SPEAKER_WAV}"
-        )
-
-
-def load_model():
-    global tts_model, tts_config, _speaker_latents
-
-    from huggingface_hub import snapshot_download
-    from TTS.tts.configs.xtts_config import XttsConfig
-    from TTS.tts.models.xtts import Xtts
-    import TTS.tts.models.xtts as _xtts_mod
-
-    # Patch audio loader to use soundfile instead of torchaudio/TorchCodec
-    def _sf_load_audio(file_path, sample_rate):
-        data, sr = sf.read(str(file_path), dtype='float32')
-        if data.ndim > 1:
-            data = data.mean(axis=1)
-        if sr != sample_rate:
-            from scipy.signal import resample
-            data = resample(data, int(round(len(data) * sample_rate / sr)))
-        return torch.from_numpy(data).unsqueeze(0)
-
-    _xtts_mod.load_audio = _sf_load_audio
-    app.logger.info("Audio loader patched (soundfile backend)")
-
-    # Patch tokenizer to support Vietnamese ('vi' not in base XTTS language list)
-    from TTS.tts.layers.xtts.tokenizer import VoiceBpeTokenizer
-    _orig_preprocess = VoiceBpeTokenizer.preprocess_text
-
-    def _preprocess_with_vi(self, txt, lang):
-        if lang == 'vi':
-            return txt.strip()
-        return _orig_preprocess(self, txt, lang)
-
-    VoiceBpeTokenizer.preprocess_text = _preprocess_with_vi
-    app.logger.info("Tokenizer patched for Vietnamese")
-
-    app.logger.info(f"Downloading {MODEL_ID} (first run only)…")
-    model_path = snapshot_download(MODEL_ID)
-    app.logger.info(f"Model path: {model_path}")
-
-    config = XttsConfig()
-    config.load_json(str(Path(model_path) / "config.json"))
-
-    model = Xtts.init_from_config(config)
-    model.load_checkpoint(config, checkpoint_dir=model_path, eval=True)
-
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    model.to(device)
-    app.logger.info(f"Model loaded on {device}")
-
-    tts_model = model
-    tts_config = config
-
-    speaker_wav = ensure_reference_audio()
-    app.logger.info(f"Computing speaker embedding from: {speaker_wav}")
-    _speaker_latents = model.get_conditioning_latents(
-        audio_path=[speaker_wav],
-        gpt_cond_len=config.gpt_cond_len,
-        max_ref_length=config.max_ref_len,
-        sound_norm_refs=config.sound_norm_refs,
-    )
-    app.logger.info("Speaker embedding cached.")
-
-
-def get_model():
-    if tts_model is None:
-        load_model()
-    return tts_model, tts_config
-
-
-def get_latents():
-    if _speaker_latents is None:
-        get_model()
-    return _speaker_latents
-
+# ─── Routes ───────────────────────────────────────────────────────────────────
 
 @app.route('/health', methods=['GET'])
-def health_check():
-    try:
-        return jsonify({
-            'status': 'healthy',
-            'message': 'viXTTS server is running',
-            'model': MODEL_ID,
-            'device': 'cuda' if torch.cuda.is_available() else 'cpu',
-            'available_voices': list(VOICES.keys()),
-            'available_languages': list(LANGUAGES.keys()),
-        }), 200
-    except Exception as e:
-        return jsonify({'status': 'unhealthy', 'message': str(e)}), 503
+def health():
+    return jsonify({
+        'status': 'healthy',
+        'model': backend.name,
+        'available_voices': backend.voices,
+        'voice_labels': backend.voice_labels,
+        'available_languages': backend.languages,
+        'language_labels': backend.language_labels(),
+    })
 
 
 @app.route('/generate', methods=['POST'])
-def generate_speech():
-    try:
-        data = request.get_json()
-        if not data:
-            return jsonify({'error': 'No JSON data provided'}), 400
+def generate():
+    data = request.get_json() or {}
+    text = data.get('text', '').strip()
+    voice = data.get('voice')
+    speed = float(data.get('speed', 1.0))
+    language = data.get('language', 'vi')
+    if not text:
+        return jsonify({'error': 'No text'}), 400
 
-        text = data.get('text', '').strip()
-        language = data.get('language', 'vi')
-        speed = float(data.get('speed', 1.0))
+    chunks = split_text(text)
+    app.logger.info(f"[{backend.name}] generate {len(chunks)} chunk(s): {text[:60]}")
 
-        if not text:
-            return jsonify({'error': 'No text provided'}), 400
-        if language not in LANGUAGES:
-            language = 'vi'
+    silence = np.zeros(int(backend.sample_rate * 0.25), dtype=np.float32)
+    parts = []
+    for chunk in chunks:
+        try:
+            parts.append(backend.synthesize(chunk, voice=voice, speed=speed, language=language))
+            parts.append(silence)
+        except Exception as e:
+            app.logger.error(f"Chunk error: {e}")
 
-        model, config = get_model()
-        gpt_cond_latent, speaker_embedding = get_latents()
+    if not parts:
+        return jsonify({'error': 'Synthesis failed'}), 500
 
-        chunks = split_text(text)
-        app.logger.info(f"Generating [{language}] in {len(chunks)} chunk(s): {text[:60]}")
-
-        all_wav = []
-        for chunk in chunks:
-            output = model.inference(
-                text=chunk,
-                language=language,
-                gpt_cond_latent=gpt_cond_latent,
-                speaker_embedding=speaker_embedding,
-                temperature=0.7,
-                length_penalty=1.0,
-                repetition_penalty=10.0,
-                top_k=50,
-                top_p=0.85,
-                speed=speed,
-            )
-            all_wav.append(np.array(output["wav"], dtype=np.float32))
-
-        wav = np.concatenate(all_wav) if len(all_wav) > 1 else all_wav[0]
-        buf = io.BytesIO()
-        sf.write(buf, wav, SAMPLE_RATE, format='wav')
-        buf.seek(0)
-        return send_file(buf, mimetype='audio/wav', as_attachment=False, download_name='speech.wav')
-
-    except Exception as e:
-        app.logger.exception(f"Generation error: {e}")
-        return jsonify({'error': str(e)}), 500
+    wav = np.concatenate(parts)
+    buf = io.BytesIO()
+    sf.write(buf, wav, backend.sample_rate, format='wav', subtype='PCM_16')
+    buf.seek(0)
+    return send_file(buf, mimetype='audio/wav', as_attachment=False, download_name='speech.wav')
 
 
 @app.route('/stream', methods=['POST'])
-def stream_speech():
-    try:
-        data = request.get_json()
-        if not data:
-            return jsonify({'error': 'No JSON data provided'}), 400
+def stream():
+    data = request.get_json() or {}
+    text = data.get('text', '').strip()
+    voice = data.get('voice')
+    speed = float(data.get('speed', 1.0))
+    language = data.get('language', 'vi')
+    if not text:
+        return jsonify({'error': 'No text'}), 400
 
-        text = data.get('text', '').strip()
-        language = data.get('language', 'vi')
-        speed = float(data.get('speed', 1.0))
+    chunks = split_text(text)
+    MIN_BYTES = int(backend.sample_rate * 0.15 * 2)  # 150 ms PCM16
 
-        if not text:
-            return jsonify({'error': 'No text provided'}), 400
-        if language not in LANGUAGES:
-            language = 'vi'
+    def gen():
+        buf = b''
+        for chunk in chunks:
+            try:
+                wave = backend.synthesize(chunk, voice=voice, speed=speed, language=language)
+                buf += (np.clip(wave, -1, 1) * 32767).astype(np.int16).tobytes()
+                while len(buf) >= MIN_BYTES:
+                    yield buf[:MIN_BYTES]
+                    buf = buf[MIN_BYTES:]
+            except Exception as e:
+                app.logger.error(f"Stream chunk error: {e}")
+        if buf:
+            yield buf
 
-        model, config = get_model()
-        gpt_cond_latent, speaker_embedding = get_latents()
-
-        text_chunks = split_text(text)
-        app.logger.info(f"Streaming [{language}] in {len(text_chunks)} chunk(s)")
-
-        MIN_CHUNK_BYTES = int(SAMPLE_RATE * 0.15 * 2)  # 150ms buffer per send
-
-        def generate():
-            buf = b""
-            for text_chunk in text_chunks:
-                try:
-                    for audio_chunk in model.inference_stream(
-                        text=text_chunk,
-                        language=language,
-                        gpt_cond_latent=gpt_cond_latent,
-                        speaker_embedding=speaker_embedding,
-                        temperature=0.7,
-                        speed=speed,
-                    ):
-                        if isinstance(audio_chunk, torch.Tensor):
-                            audio_chunk = audio_chunk.cpu().numpy()
-                        buf += (audio_chunk * 32767).astype(np.int16).tobytes()
-                        while len(buf) >= MIN_CHUNK_BYTES:
-                            yield buf[:MIN_CHUNK_BYTES]
-                            buf = buf[MIN_CHUNK_BYTES:]
-                except Exception as e:
-                    app.logger.error(f"Stream error on chunk '{text_chunk[:40]}': {e}")
-            if buf:
-                yield buf
-
-        return Response(generate(), mimetype='audio/x-raw')
-
-    except Exception as e:
-        app.logger.exception(f"Stream setup error: {e}")
-        return jsonify({'error': str(e)}), 500
+    return Response(gen(), mimetype='application/octet-stream')
 
 
 if __name__ == '__main__':
-    app.logger.info("Loading model at startup…")
-    try:
-        get_model()
-        app.logger.info("Server ready!")
-    except Exception as e:
-        app.logger.error(f"Model load failed: {e}")
-
-    # threaded=False because XTTS/CUDA is not thread-safe
+    app.logger.info(f"Loading backend: {ACTIVE_BACKEND}")
+    backend.load()
+    app.logger.info("Server ready.")
     app.run(host='0.0.0.0', port=8000, debug=False, threaded=False)
