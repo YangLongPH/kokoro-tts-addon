@@ -9,102 +9,83 @@
     let lastSelection = '';
     let audioPlayerIframe = null; // To hold the sandboxed audio player iframe
 
-    // Add at top of file
     let audioContext;
     let audioQueue = [];
     let isPlaying = false;
-    let currentSourceNode = null; // To keep track of the currently playing AudioBufferSourceNode
+    let streamingComplete = false;
+    let nextStartTime = 0;
+    let currentSourceNode = null;
 
-    // Initialize audio context
     function initAudioContext() {
         if (!audioContext) {
-            // Check if AudioContext is already running or suspended, try to resume
-            audioContext = new (window.AudioContext || window.webkitAudioContext)({
-                sampleRate: 22050
-            });
-            audioContext.suspend(); // Start in suspended state
-            console.log("Content Script: AudioContext initialized and suspended.");
+            audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
         }
-        // If suspended, try to resume it on user interaction
         if (audioContext.state === 'suspended') {
-            audioContext.resume().then(() => {
-                console.log("Content Script: AudioContext resumed.");
-            }).catch(e => {
-                console.error("Content Script: Failed to resume AudioContext:", e);
-            });
+            audioContext.resume().catch(e => console.error("AudioContext resume failed:", e));
         }
     }
 
-    // Audio processing function
-    async function processAudioChunk(chunk) {
-        initAudioContext();
-        
-        // Convert to Float32 audio buffer
+    // Schedule a PCM chunk to play exactly when the previous one ends — no gaps
+    function scheduleChunk(chunk) {
         const audioData = new Int16Array(chunk);
         const float32Data = new Float32Array(audioData.length);
         for (let i = 0; i < audioData.length; i++) {
             float32Data[i] = audioData[i] / 32768.0;
         }
-        
-        // Create audio buffer
-        const buffer = audioContext.createBuffer(1, float32Data.length, 22050);
+
+        const buffer = audioContext.createBuffer(1, float32Data.length, 24000);
         buffer.copyToChannel(float32Data, 0);
-        
-        // Create source and schedule playback
+
         const source = audioContext.createBufferSource();
         source.buffer = buffer;
         source.connect(audioContext.destination);
-        currentSourceNode = source; // Keep reference to current source
+        currentSourceNode = source;
 
-        return new Promise(resolve => {
-            source.onended = () => {
-                if (currentSourceNode === source) { // Only clear if it's the one we just played
-                    currentSourceNode = null;
-                }
-                resolve();
-            };
-            source.start();
-        });
+        // Start immediately if first chunk, otherwise chain onto previous end time
+        const startTime = Math.max(audioContext.currentTime + 0.05, nextStartTime);
+        source.start(startTime);
+        nextStartTime = startTime + buffer.duration;
     }
 
-    // Process audio queue
+    // Process audio queue using pre-scheduled timeline playback
     async function processQueue() {
         if (isPlaying || audioQueue.length === 0) return;
-        
+
         isPlaying = true;
-        showNotification('Speech streaming...', 'loading'); // Indicate streaming started
-        while (audioQueue.length > 0) {
-            const chunk = audioQueue.shift();
-            try {
-                await processAudioChunk(chunk);
-            } catch (e) {
-                console.error("Error processing audio chunk:", e);
-                showNotification('Error playing stream', 'error');
-                stopStreamingAudio();
+        initAudioContext();
+        nextStartTime = audioContext.currentTime + 0.1; // 100ms initial buffer
+        showNotification('Speech streaming...', 'loading');
+
+        while (true) {
+            if (audioQueue.length > 0) {
+                scheduleChunk(audioQueue.shift());
+            } else if (streamingComplete) {
                 break;
+            } else {
+                await new Promise(resolve => setTimeout(resolve, 20));
             }
         }
+
+        // Wait for last scheduled chunk to finish
+        const remaining = (nextStartTime - audioContext.currentTime) * 1000 + 100;
+        if (remaining > 0) await new Promise(resolve => setTimeout(resolve, remaining));
+
         isPlaying = false;
-        // The streamEnd message will handle the final success notification
+        streamingComplete = false;
     }
 
-    /**
-     * Stops any currently playing streaming audio and clears the queue.
-     */
     function stopStreamingAudio() {
         if (currentSourceNode) {
-            currentSourceNode.stop();
+            try { currentSourceNode.stop(); } catch (e) {}
             currentSourceNode.disconnect();
             currentSourceNode = null;
         }
-        audioQueue = []; // Clear the queue
+        audioQueue = [];
         isPlaying = false;
+        streamingComplete = false;
+        nextStartTime = 0;
         if (audioContext && audioContext.state === 'running') {
-            audioContext.suspend().then(() => {
-                console.log("Content Script: AudioContext suspended due to stop.");
-            }).catch(e => {
-                console.error("Content Script: Failed to suspend AudioContext:", e);
-            });
+            audioContext.suspend().catch(() => {});
         }
         showNotification('Speech playback stopped', 'info');
     }
@@ -390,10 +371,10 @@
             return true;
         }
         else if (request.action === 'streamEnd') {
-            // Wait for queue to finish playing before showing final message
-            const checkPlayback = setInterval(() => {
-                if (audioQueue.length === 0 && !isPlaying) {
-                    clearInterval(checkPlayback);
+            streamingComplete = true;
+            const checkDone = setInterval(() => {
+                if (!isPlaying) {
+                    clearInterval(checkDone);
                     showNotification('Speech stream completed! 🎉', 'success');
                 }
             }, 100);

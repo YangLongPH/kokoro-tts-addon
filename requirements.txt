@@ -1,24 +1,10 @@
-# Core libraries for training and inference
 torch
-transformers
-datasets
-peft
-sentence-transformers
-
-# Utility libraries
 numpy
-scikit-learn
-matplotlib
-psutil
-tqdm
-pyyaml
-ftfy
-librosa 
 scipy
 soundfile
-kokoro
 flask
 flask-cors
-
-# Memory and embeddings
-faiss-cpu
+TTS
+huggingface_hub
+edge-tts
+transformers==4.40.2

@@ -1,0 +1,27 @@
+# Python
+venv/
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+.env
+
+# TTS / ML model cache
+*.pth
+*.bin
+*.onnx
+
+# Generated audio files
+*.wav
+*.mp3
+*.ogg
+
+# macOS
+.DS_Store
+*.swp
+
+# IDE
+.vscode/
+.idea/

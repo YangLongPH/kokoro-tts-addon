@@ -25,46 +25,21 @@ const clearTextBtn = document.getElementById('clearText');
 
 // Voice and Language Mappings for display (can be extended)
 const VOICE_DISPLAY_NAMES = {
-    'af_heart': 'American Female (Heart)',
-    'af_alloy': 'American Female (Alloy)',
-    'af_aoede': 'American Female (Aoede)',
-    'af_bella': 'American Female (Bella)',
-    'af_jessica': 'American Female (Jessica)',
-    'af_kore': 'American Female (Kore)',
-    'af_nicole': 'American Female (Nicole)',
-    'af_nova': 'American Female (Nova)',
-    'af_river': 'American Female (River)',
-    'af_sarah': 'American Female (Sarah)',
-    'af_sky': 'American Female (Sky)',
-    'am_adam': 'American Male (Adam)',
-    'am_echo': 'American Male (Echo)',
-    'am_eric': 'American Male (Eric)',
-    'am_fenrir': 'American Male (Fenrir)',
-    'am_liam': 'American Male (Liam)',
-    'am_michael': 'American Male (Michael)',
-    'am_onyx': 'American Male (Onyx)',
-    'am_puck': 'American Male (Puck)',
-    'am_santa': 'American Male (Santa)',
-    'bf_alice': 'British Female (Alice)',
-    'bf_emma': 'British Female (Emma)',
-    'bf_isabella': 'British Female (Isabella)',
-    'bf_lily': 'British Female (Lily)',
-    'bm_daniel': 'British Male (Daniel)',
-    'bm_fable': 'British Male (Fable)',
-    'bm_george': 'British Male (George)',
-    'bm_lewis': 'British Male (Lewis)'
+    'vi_default': 'Vietnamese (Default)',
 };
 
 const LANGUAGE_DISPLAY_NAMES = {
-    'a': '🇺🇸 American English',
-    'b': '🇬🇧 British English',
-    'e': '🇪🇸 Spanish',
-    'f': '🇫🇷 French',
-    'h': '🇮🇳 Hindi',
-    'i': '🇮🇹 Italian',
-    'j': '🇯🇵 Japanese',
-    'p': '🇧🇷 Portuguese (BR)',
-    'z': '🇨🇳 Mandarin Chinese'
+    'vi': '🇻🇳 Vietnamese',
+    'en': '🇺🇸 English',
+    'fr': '🇫🇷 French',
+    'es': '🇪🇸 Spanish',
+    'de': '🇩🇪 German',
+    'it': '🇮🇹 Italian',
+    'pt': '🇧🇷 Portuguese',
+    'zh-cn': '🇨🇳 Chinese',
+    'ja': '🇯🇵 Japanese',
+    'ko': '🇰🇷 Korean',
+    'hi': '🇮🇳 Hindi',
 };
 
 // Initialize on DOM content loaded
@@ -204,16 +179,16 @@ function cleanupAudioResources() {
 async function loadSettings() {
     try {
         const result = await browser.storage.local.get({
-            voice: 'af_heart', // Default voice
-            speed: 1.0,        // Default speed
-            language: 'a'      // Default language (American English)
+            voice: 'vi_default', // Default voice
+            speed: 1.0,          // Default speed
+            language: 'vi'       // Default language (Vietnamese)
         });
 
         // Only set the value if the option exists, otherwise default will be used
         if (Array.from(voiceSelect.options).some(option => option.value === result.voice)) {
             voiceSelect.value = result.voice;
         } else {
-            voiceSelect.value = 'af_heart'; // Fallback to a safe default if saved voice is not available
+            voiceSelect.selectedIndex = 0; // Fallback to first available voice
         }
 
         speedInput.value = result.speed;
@@ -222,7 +197,7 @@ async function loadSettings() {
         if (Array.from(langSelect.options).some(option => option.value === result.language)) {
             langSelect.value = result.language;
         } else {
-            langSelect.value = 'a'; // Fallback to a safe default if saved language is not available
+            langSelect.selectedIndex = 0; // Fallback to first available language
         }
 
     } catch (error) {
