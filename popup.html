@@ -649,9 +649,18 @@
             <label class="form-label" style="font-size:12px; margin-bottom:4px; display:block;">Ignore selector</label>
             <input type="text" id="ignoreSelectorInput" placeholder=".ads, nav, footer, .sidebar" style="width:100%; padding:6px 8px; background:rgba(255,255,255,0.07); border:1px solid rgba(255,255,255,0.15); border-radius:6px; color:#fff; font-size:12px; outline:none;">
         </div>
+        <div style="display:flex; align-items:center; gap:8px; margin-top:4px;">
+            <input type="checkbox" id="autoNextChapter" style="accent-color:#64ffda; width:14px; height:14px; cursor:pointer;">
+            <label for="autoNextChapter" class="form-label" style="font-size:12px; margin:0; cursor:pointer;">Auto next chapter when done</label>
+        </div>
+        <div id="nextChapterSelectorRow">
+            <label class="form-label" style="font-size:12px; margin-bottom:4px; display:block;">Next chapter selector <span style="color:rgba(255,255,255,0.4); font-size:10px;">(optional)</span></label>
+            <input type="text" id="nextChapterSelectorInput" placeholder=".next-chapter, a[rel=next], #nextBtn" style="width:100%; padding:6px 8px; background:rgba(255,255,255,0.07); border:1px solid rgba(255,255,255,0.15); border-radius:6px; color:#fff; font-size:12px; outline:none;">
+        </div>
     </div>
     <button id="saveReadAloudConfig" class="secondary-btn" style="margin-top:8px;">💾 Save Config</button>
     <button id="readAloudBtn" class="primary-btn" style="margin-top:8px;">📖 Read Aloud</button>
+    <button id="pauseReadAloudBtn" class="secondary-btn" style="display:none; margin-top:8px;">⏸️ Pause</button>
     <button id="stopReadAloudBtn" class="secondary-btn" style="display:none; margin-top:8px;">⏹️ Stop Reading</button>
     <div id="readAloudProgress" style="display:none; margin-top:10px;">
         <div class="ra-track">

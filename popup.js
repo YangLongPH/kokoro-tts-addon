@@ -26,12 +26,15 @@ const clearTextBtn = document.getElementById('clearText');
 
 // Read Aloud buttons and progress
 const readAloudBtn = document.getElementById('readAloudBtn');
+const pauseReadAloudBtn = document.getElementById('pauseReadAloudBtn');
 const stopReadAloudBtn = document.getElementById('stopReadAloudBtn');
 const preloadAheadInput = document.getElementById('preloadAheadInput');
 const preloadAheadValue = document.getElementById('preloadAheadValue');
 const contentSelectorInput = document.getElementById('contentSelectorInput');
 const ignoreSelectorInput = document.getElementById('ignoreSelectorInput');
 const saveReadAloudConfig = document.getElementById('saveReadAloudConfig');
+const autoNextChapter = document.getElementById('autoNextChapter');
+const nextChapterSelectorInput = document.getElementById('nextChapterSelectorInput');
 const readAloudProgress = document.getElementById('readAloudProgress');
 const raFill = document.getElementById('raFill');
 const raPreload = document.getElementById('raPreload');
@@ -51,6 +54,12 @@ chrome.runtime.onMessage.addListener((request) => {
         raText.textContent = `${current} / ${total} sentences`;
         raPreloadLabel.textContent = preloaded > 0 ? `+${preloaded} preloaded` : '';
         raCacheText.textContent = `${totalCached ?? 0} / ${total} cache`;
+    } else if (request.action === 'readAloudAutoStarted') {
+        readAloudBtn.style.display = 'none';
+        pauseReadAloudBtn.style.display = 'block';
+        pauseReadAloudBtn.textContent = '⏸️ Pause';
+        stopReadAloudBtn.style.display = 'block';
+        readAloudProgress.style.display = 'block';
     } else if (request.action === 'readAloudDone') {
         raText.textContent = 'Complete!';
         raFill.style.width = '100%';
@@ -59,6 +68,8 @@ chrome.runtime.onMessage.addListener((request) => {
         setTimeout(() => {
             readAloudProgress.style.display = 'none';
             readAloudBtn.style.display = 'block';
+            pauseReadAloudBtn.style.display = 'none';
+            pauseReadAloudBtn.textContent = '⏸️ Pause';
             stopReadAloudBtn.style.display = 'none';
         }, 2000);
     }
@@ -146,7 +157,9 @@ function setupEventListeners() {
         await chrome.storage.local.set({
             preloadAhead: parseInt(preloadAheadInput.value),
             contentSelector: contentSelectorInput.value.trim(),
-            ignoreSelector: ignoreSelectorInput.value.trim()
+            ignoreSelector: ignoreSelectorInput.value.trim(),
+            autoNextChapter: autoNextChapter.checked,
+            nextChapterSelector: nextChapterSelectorInput.value.trim()
         });
         const orig = saveReadAloudConfig.textContent;
         saveReadAloudConfig.textContent = '✓ Saved';
@@ -165,10 +178,23 @@ function setupEventListeners() {
                 ignoreSelector: ignoreSelectorInput.value.trim()
             });
             readAloudBtn.style.display = 'none';
+            pauseReadAloudBtn.style.display = 'block';
             stopReadAloudBtn.style.display = 'block';
         } catch (e) {
             showStatus('Reload the page first, then try again.', 'error');
         }
+    });
+
+    pauseReadAloudBtn.addEventListener('click', async () => {
+        const tabs = await chrome.tabs.query({active: true, currentWindow: true});
+        if (!tabs[0]) return;
+        const isPaused = pauseReadAloudBtn.textContent.startsWith('⏸');
+        try {
+            await chrome.tabs.sendMessage(tabs[0].id, {
+                action: isPaused ? 'pauseReadAloud' : 'resumeReadAloud'
+            });
+            pauseReadAloudBtn.textContent = isPaused ? '▶️ Resume' : '⏸️ Pause';
+        } catch (e) {}
     });
 
     stopReadAloudBtn.addEventListener('click', async () => {
@@ -177,6 +203,8 @@ function setupEventListeners() {
             try { await chrome.tabs.sendMessage(tabs[0].id, { action: 'stopReadAloud' }); } catch (e) {}
         }
         readAloudBtn.style.display = 'block';
+        pauseReadAloudBtn.style.display = 'none';
+        pauseReadAloudBtn.textContent = '⏸️ Pause';
         stopReadAloudBtn.style.display = 'none';
     });
 }
@@ -269,13 +297,17 @@ async function loadSettings() {
             language: 'vi',
             preloadAhead: 10,
             contentSelector: '',
-            ignoreSelector: ''
+            ignoreSelector: '',
+            autoNextChapter: false,
+            nextChapterSelector: ''
         });
 
         preloadAheadInput.value = result.preloadAhead;
         preloadAheadValue.textContent = result.preloadAhead;
         contentSelectorInput.value = result.contentSelector;
         ignoreSelectorInput.value = result.ignoreSelector;
+        autoNextChapter.checked = result.autoNextChapter;
+        nextChapterSelectorInput.value = result.nextChapterSelector;
 
         // Only set the value if the option exists, otherwise default will be used
         if (Array.from(voiceSelect.options).some(option => option.value === result.voice)) {

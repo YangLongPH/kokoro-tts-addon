@@ -352,12 +352,18 @@
     // ─── Read Aloud ────────────────────────────────────────────────────────────
 
     let readAloudActive = false;
+    let readAloudPaused = false;
     let readAloudSentences = [];
     let readAloudIndex = 0;
     const preloadCache = {};   // index → Promise<objectURL>
     const preloadReady = new Set(); // indices whose audio has finished downloading
     let PRELOAD_AHEAD = 10;
     let currentReadAudio = null;
+    let userScrolling = false;
+    let userScrollTimer = null;
+    let _sentenceIndexMap = {};  // sentence text → index (for DOM rewrap)
+    let _domObserver = null;
+    let _rewrapPending = false;
 
     function extractMainContent(customSelector) {
         if (customSelector) {
@@ -399,6 +405,7 @@
 
     function wrapContentSentences(container, ignoreSelector) {
         const sentences = [];
+        _sentenceIndexMap = {};
         const nodes = container.querySelectorAll('p, h1, h2, h3, h4, li');
         nodes.forEach(node => {
             if (ignoreSelector) {
@@ -412,6 +419,7 @@
             let html = '';
             parts.forEach(sent => {
                 const idx = sentences.length;
+                _sentenceIndexMap[sent.trim()] = idx;
                 sentences.push(sent);
                 html += `<span data-kokoro-s="${idx}">${escapeHtml(sent)} </span>`;
             });
@@ -420,12 +428,103 @@
         return sentences;
     }
 
+    // Re-wrap a single paragraph node that was reset by the page's virtual scroll
+    function rewrapNode(node) {
+        const text = node.innerText.trim();
+        if (!text || text.length < 3) return;
+        const parts = splitSentences(text);
+        let html = '';
+        let anyFound = false;
+        parts.forEach(sent => {
+            const idx = _sentenceIndexMap[sent.trim()];
+            if (idx !== undefined) {
+                anyFound = true;
+                html += `<span data-kokoro-s="${idx}">${escapeHtml(sent)} </span>`;
+            } else {
+                html += escapeHtml(sent) + ' ';
+            }
+        });
+        if (!anyFound) return;
+        node.innerHTML = html;
+        // Re-apply highlight class if this node contains the current sentence
+        const currentSpan = node.querySelector(`[data-kokoro-s="${readAloudIndex}"]`);
+        if (currentSpan) currentSpan.classList.add('kokoro-reading');
+    }
+
+    function injectHighlightStyle() {
+        if (document.getElementById('kokoro-highlight-style')) return;
+        const style = document.createElement('style');
+        style.id = 'kokoro-highlight-style';
+        // Injected at end of body → last in cascade → our !important beats the page's !important
+        style.textContent = `
+            [data-kokoro-s].kokoro-reading {
+                background-color: rgba(255, 220, 50, 0.6) !important;
+                border-radius: 3px !important;
+                outline: 2px solid rgba(255, 180, 0, 0.65) !important;
+                outline-offset: 1px !important;
+            }
+        `;
+        document.body.appendChild(style);
+    }
+
+    function startDOMObserver(container) {
+        if (_domObserver) _domObserver.disconnect();
+        _domObserver = new MutationObserver((mutations) => {
+            if (!readAloudActive || _rewrapPending) return;
+            const lost = new Set();
+            mutations.forEach(m => {
+                const node = m.target.closest
+                    ? (m.target.matches('p,h1,h2,h3,h4,li') ? m.target : m.target.closest('p,h1,h2,h3,h4,li'))
+                    : null;
+                if (node && !node.querySelector('[data-kokoro-s]')) lost.add(node);
+            });
+            if (lost.size === 0) return;
+            _rewrapPending = true;
+            _domObserver.disconnect();
+            lost.forEach(node => rewrapNode(node));
+            _domObserver.observe(container, { childList: true, subtree: true });
+            _rewrapPending = false;
+        });
+        _domObserver.observe(container, { childList: true, subtree: true });
+    }
+
+    window.addEventListener('scroll', () => {
+        userScrolling = true;
+        clearTimeout(userScrollTimer);
+        userScrollTimer = setTimeout(() => { userScrolling = false; }, 2000);
+    }, { passive: true });
+
+    function updateReadingBar(text) {
+        let bar = document.getElementById('kokoro-reading-bar');
+        if (!text) { if (bar) bar.style.display = 'none'; return; }
+        if (!bar) {
+            bar = document.createElement('div');
+            bar.id = 'kokoro-reading-bar';
+            Object.assign(bar.style, {
+                position: 'fixed', bottom: '20px', left: '50%',
+                transform: 'translateX(-50%)', maxWidth: '70%',
+                background: 'rgba(20,20,20,0.88)', color: '#fff',
+                padding: '7px 18px', borderRadius: '20px',
+                fontSize: '13px', lineHeight: '1.4', zIndex: '2147483647',
+                boxShadow: '0 2px 12px rgba(0,0,0,0.5)',
+                pointerEvents: 'none', textAlign: 'center',
+                borderLeft: '3px solid rgba(255,220,50,0.9)'
+            });
+            document.body.appendChild(bar);
+        }
+        bar.textContent = text;
+        bar.style.display = 'block';
+    }
+
     function highlightSentence(index) {
-        document.querySelectorAll('.kokoro-reading').forEach(el => el.classList.remove('kokoro-reading'));
+        document.querySelectorAll('[data-kokoro-s].kokoro-reading').forEach(el => el.classList.remove('kokoro-reading'));
         const span = document.querySelector(`[data-kokoro-s="${index}"]`);
         if (span) {
             span.classList.add('kokoro-reading');
-            span.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            updateReadingBar(span.textContent.trim());
+            if (!userScrolling) {
+                span.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
         }
     }
 
@@ -458,7 +557,9 @@
             currentReadAudio = new Audio(url);
             currentReadAudio.onended = resolve;
             currentReadAudio.onerror = reject;
-            currentReadAudio.play().catch(reject);
+            if (!readAloudPaused) {
+                currentReadAudio.play().catch(reject);
+            }
         });
     }
 
@@ -476,6 +577,12 @@
         sendProgress(0, total);
 
         while (readAloudActive && readAloudIndex < total) {
+            // Wait while paused (between sentences)
+            while (readAloudPaused && readAloudActive) {
+                await new Promise(r => setTimeout(r, 100));
+            }
+            if (!readAloudActive) break;
+
             const index = readAloudIndex;
             if (!preloadCache[index]) preloadSentence(index);
 
@@ -510,19 +617,86 @@
         if (readAloudActive) {
             showNotification('Reading complete!', 'success');
             chrome.runtime.sendMessage({ action: 'readAloudDone' }).catch(() => {});
+            await tryAutoNextChapter();
         }
         cleanupReadAloud(false);
     }
 
+    function findNextChapterLink(customSelector) {
+        // 1. User-specified selector
+        if (customSelector) {
+            try {
+                const el = document.querySelector(customSelector);
+                if (el) {
+                    const a = el.tagName === 'A' ? el : (el.querySelector('a') || el.closest('a'));
+                    if (a && a.href) return a.href;
+                }
+            } catch (e) {}
+        }
+        // 2. <link rel="next"> in <head>
+        const linkRel = document.querySelector('link[rel="next"]');
+        if (linkRel && linkRel.href) return linkRel.href;
+        // 3. <a rel="next">
+        const aRel = document.querySelector('a[rel="next"]');
+        if (aRel && aRel.href) return aRel.href;
+        // 4. Common "next" text patterns
+        const nextRe = /^(next|tiếp|tiếp theo|chương sau|chap sau|next chapter|→|»|›|>>|>)$/i;
+        for (const a of document.querySelectorAll('a')) {
+            if (nextRe.test(a.textContent.trim()) && a.href) return a.href;
+        }
+        // 5. Chapter number in URL — find link pointing to current+1
+        const chRe = /[\/\-_](?:chuong|chapter|chap|ch)[\/\-_]?0*(\d+)/i;
+        const curMatch = window.location.href.match(chRe);
+        if (curMatch) {
+            const nextNum = parseInt(curMatch[1]) + 1;
+            const nextUrlRe = new RegExp(`[/\\-_](?:chuong|chapter|chap|ch)[/\\-_]?0*${nextNum}(?:[^\\d]|$)`, 'i');
+            for (const a of document.querySelectorAll('a')) {
+                if (a.href && a.href !== window.location.href && nextUrlRe.test(a.href)) return a.href;
+            }
+        }
+        return null;
+    }
+
+    async function tryAutoNextChapter() {
+        const settings = await chrome.storage.local.get({ autoNextChapter: false, nextChapterSelector: '' });
+        if (!settings.autoNextChapter) return;
+        const nextUrl = findNextChapterLink(settings.nextChapterSelector);
+        if (!nextUrl) { showNotification('No next chapter found', 'error'); return; }
+        showNotification('Next chapter in 2s…', 'info');
+        await chrome.storage.local.set({ _autoStartReadAloud: true });
+        setTimeout(() => { window.location.href = nextUrl; }, 2000);
+    }
+
+    // Auto-start reading if navigated here from auto-next-chapter
+    async function checkAutoStart() {
+        const result = await chrome.storage.local.get({ _autoStartReadAloud: false });
+        if (!result._autoStartReadAloud) return;
+        await chrome.storage.local.set({ _autoStartReadAloud: false });
+        // Wait for page to fully render
+        await new Promise(r => setTimeout(r, 1500));
+        const s = await chrome.storage.local.get({ preloadAhead: 10, contentSelector: '', ignoreSelector: '' });
+        startReadAloud(s.preloadAhead, s.contentSelector, s.ignoreSelector);
+        chrome.runtime.sendMessage({ action: 'readAloudAutoStarted' }).catch(() => {});
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', checkAutoStart);
+    } else {
+        checkAutoStart();
+    }
+
     function cleanupReadAloud(notify = true) {
         readAloudActive = false;
+        readAloudPaused = false;
+        if (_domObserver) { _domObserver.disconnect(); _domObserver = null; }
         if (currentReadAudio) { currentReadAudio.pause(); currentReadAudio = null; }
         Object.entries(preloadCache).forEach(([k, p]) => {
             p.then(url => URL.revokeObjectURL(url)).catch(() => {});
             delete preloadCache[k];
         });
         preloadReady.clear();
-        document.querySelectorAll('.kokoro-reading').forEach(el => el.classList.remove('kokoro-reading'));
+        updateReadingBar('');
+        document.getElementById('kokoro-highlight-style')?.remove();
         document.querySelectorAll('[data-kokoro-s]').forEach(el => {
             el.replaceWith(document.createTextNode(el.textContent));
         });
@@ -541,6 +715,8 @@
 
         readAloudActive = true;
         readAloudIndex = 0;
+        injectHighlightStyle();
+        startDOMObserver(container);
 
         const initialCount = Math.min(PRELOAD_AHEAD, readAloudSentences.length);
         for (let i = 0; i < initialCount; i++) preloadSentence(i);
@@ -604,6 +780,16 @@
             return true;
         } else if (request.action === 'startReadAloud') {
             startReadAloud(request.preloadAhead, request.contentSelector, request.ignoreSelector);
+            sendResponse({success: true});
+            return true;
+        } else if (request.action === 'pauseReadAloud') {
+            readAloudPaused = true;
+            if (currentReadAudio) currentReadAudio.pause();
+            sendResponse({success: true});
+            return true;
+        } else if (request.action === 'resumeReadAloud') {
+            readAloudPaused = false;
+            if (currentReadAudio) currentReadAudio.play().catch(() => {});
             sendResponse({success: true});
             return true;
         } else if (request.action === 'stopReadAloud') {
