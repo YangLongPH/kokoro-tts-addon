@@ -31,16 +31,18 @@ const preloadAheadInput = document.getElementById('preloadAheadInput');
 const preloadAheadValue = document.getElementById('preloadAheadValue');
 const contentSelectorInput = document.getElementById('contentSelectorInput');
 const ignoreSelectorInput = document.getElementById('ignoreSelectorInput');
+const saveReadAloudConfig = document.getElementById('saveReadAloudConfig');
 const readAloudProgress = document.getElementById('readAloudProgress');
 const raFill = document.getElementById('raFill');
 const raPreload = document.getElementById('raPreload');
 const raText = document.getElementById('raText');
 const raPreloadLabel = document.getElementById('raPreloadLabel');
+const raCacheText = document.getElementById('raCacheText');
 
 // Listen for progress updates from content.js
 chrome.runtime.onMessage.addListener((request) => {
     if (request.action === 'readAloudProgress') {
-        const { current, total, preloaded } = request;
+        const { current, total, preloaded, totalCached } = request;
         readAloudProgress.style.display = 'block';
         const pct = total > 0 ? (current / total) * 100 : 0;
         const preloadPct = total > 0 ? Math.min((current + preloaded) / total * 100, 100) : 0;
@@ -48,10 +50,12 @@ chrome.runtime.onMessage.addListener((request) => {
         raPreload.style.width = preloadPct + '%';
         raText.textContent = `${current} / ${total} sentences`;
         raPreloadLabel.textContent = preloaded > 0 ? `+${preloaded} preloaded` : '';
+        raCacheText.textContent = `${totalCached ?? 0} / ${total} cache`;
     } else if (request.action === 'readAloudDone') {
         raText.textContent = 'Complete!';
         raFill.style.width = '100%';
         raPreloadLabel.textContent = '';
+        raCacheText.textContent = '';
         setTimeout(() => {
             readAloudProgress.style.display = 'none';
             readAloudBtn.style.display = 'block';
@@ -132,19 +136,21 @@ function setupEventListeners() {
         showAudioControls();
     });
 
-    // Preload slider
+    // Preload slider — update display only, saved via Save button
     preloadAheadInput.addEventListener('input', () => {
-        const val = preloadAheadInput.value;
-        preloadAheadValue.textContent = val;
-        chrome.storage.local.set({ preloadAhead: parseInt(val) });
+        preloadAheadValue.textContent = preloadAheadInput.value;
     });
 
-    // Selector fields — save on change
-    contentSelectorInput.addEventListener('change', () => {
-        chrome.storage.local.set({ contentSelector: contentSelectorInput.value.trim() });
-    });
-    ignoreSelectorInput.addEventListener('change', () => {
-        chrome.storage.local.set({ ignoreSelector: ignoreSelectorInput.value.trim() });
+    // Save config button
+    saveReadAloudConfig.addEventListener('click', async () => {
+        await chrome.storage.local.set({
+            preloadAhead: parseInt(preloadAheadInput.value),
+            contentSelector: contentSelectorInput.value.trim(),
+            ignoreSelector: ignoreSelectorInput.value.trim()
+        });
+        const orig = saveReadAloudConfig.textContent;
+        saveReadAloudConfig.textContent = '✓ Saved';
+        setTimeout(() => { saveReadAloudConfig.textContent = orig; }, 1500);
     });
 
     // Read Aloud buttons
@@ -261,13 +267,15 @@ async function loadSettings() {
             voice: 'vi_default',
             speed: 1.0,
             language: 'vi',
-            preloadAhead: 10
+            preloadAhead: 10,
+            contentSelector: '',
+            ignoreSelector: ''
         });
 
         preloadAheadInput.value = result.preloadAhead;
         preloadAheadValue.textContent = result.preloadAhead;
-        contentSelectorInput.value = result.contentSelector || '';
-        ignoreSelectorInput.value = result.ignoreSelector || '';
+        contentSelectorInput.value = result.contentSelector;
+        ignoreSelectorInput.value = result.ignoreSelector;
 
         // Only set the value if the option exists, otherwise default will be used
         if (Array.from(voiceSelect.options).some(option => option.value === result.voice)) {

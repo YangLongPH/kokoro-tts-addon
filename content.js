@@ -355,6 +355,7 @@
     let readAloudSentences = [];
     let readAloudIndex = 0;
     const preloadCache = {};   // index → Promise<objectURL>
+    const preloadReady = new Set(); // indices whose audio has finished downloading
     let PRELOAD_AHEAD = 10;
     let currentReadAudio = null;
 
@@ -441,7 +442,15 @@
 
     function preloadSentence(index) {
         if (index >= readAloudSentences.length || preloadCache[index]) return;
-        preloadCache[index] = fetchAudioUrl(readAloudSentences[index]);
+        preloadCache[index] = fetchAudioUrl(readAloudSentences[index]).then(url => {
+            preloadReady.add(index);
+            sendProgress(readAloudIndex, readAloudSentences.length);
+            return url;
+        }).catch(err => {
+            preloadReady.add(index); // count as done even on error so UI unblocks
+            sendProgress(readAloudIndex, readAloudSentences.length);
+            throw err;
+        });
     }
 
     function playAudioUrl(url) {
@@ -456,9 +465,10 @@
     function sendProgress(current, total) {
         let preloaded = 0;
         for (let i = current; i < Math.min(current + PRELOAD_AHEAD + 1, total); i++) {
-            if (preloadCache[i]) preloaded++;
+            if (preloadReady.has(i)) preloaded++;
         }
-        chrome.runtime.sendMessage({ action: 'readAloudProgress', current, total, preloaded }).catch(() => {});
+        const totalCached = preloadReady.size;
+        chrome.runtime.sendMessage({ action: 'readAloudProgress', current, total, preloaded, totalCached }).catch(() => {});
     }
 
     async function readAloudLoop() {
@@ -511,6 +521,7 @@
             p.then(url => URL.revokeObjectURL(url)).catch(() => {});
             delete preloadCache[k];
         });
+        preloadReady.clear();
         document.querySelectorAll('.kokoro-reading').forEach(el => el.classList.remove('kokoro-reading'));
         document.querySelectorAll('[data-kokoro-s]').forEach(el => {
             el.replaceWith(document.createTextNode(el.textContent));
@@ -530,10 +541,19 @@
 
         readAloudActive = true;
         readAloudIndex = 0;
-        showNotification(`Starting — ${readAloudSentences.length} sentences`, 'loading');
 
-        for (let i = 0; i < Math.min(PRELOAD_AHEAD, readAloudSentences.length); i++) preloadSentence(i);
+        const initialCount = Math.min(PRELOAD_AHEAD, readAloudSentences.length);
+        for (let i = 0; i < initialCount; i++) preloadSentence(i);
 
+        showNotification(`Preloading ${initialCount} sentences…`, 'loading');
+        sendProgress(0, readAloudSentences.length);
+
+        await Promise.all(
+            Array.from({ length: initialCount }, (_, i) => preloadCache[i].catch(() => {}))
+        );
+
+        if (!readAloudActive) return; // Was stopped while preloading
+        showNotification('Starting…', 'loading');
         readAloudLoop();
     }
 
