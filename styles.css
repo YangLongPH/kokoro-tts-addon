@@ -71,6 +71,17 @@
 .kokoro-tts-notification.loading { background-color: #FF9800; }
 */
 
+/* Read Aloud sentence highlighting */
+[data-kokoro-s] {
+    border-radius: 3px;
+    transition: background-color 0.25s ease;
+}
+.kokoro-reading {
+    background-color: rgba(255, 220, 50, 0.45) !important;
+    border-radius: 3px;
+    box-shadow: 0 0 0 1px rgba(255, 180, 0, 0.35);
+}
+
 /* Responsive adjustments for smaller screens if needed (though fixed position helps) */
 @media (max-width: 600px) {
     #kokoro-tts-float-btn {

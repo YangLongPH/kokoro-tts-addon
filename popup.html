@@ -405,6 +405,38 @@
             gap: 8px;
         }
 
+        /* Read Aloud progress bar */
+        .ra-track {
+            position: relative;
+            height: 6px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 4px;
+            overflow: hidden;
+            margin-bottom: 6px;
+        }
+        .ra-preload {
+            position: absolute;
+            top: 0; left: 0; height: 100%;
+            background: rgba(100,255,218,0.2);
+            border-radius: 4px;
+            transition: width 0.4s ease;
+        }
+        .ra-fill {
+            position: absolute;
+            top: 0; left: 0; height: 100%;
+            background: linear-gradient(90deg, #64ffda, #00bcd4);
+            border-radius: 4px;
+            transition: width 0.4s ease;
+            z-index: 1;
+        }
+        .ra-label {
+            display: flex;
+            justify-content: space-between;
+            font-size: 11px;
+        }
+        #raText { color: rgba(255,255,255,0.75); }
+        #raPreloadLabel { color: rgba(100,255,218,0.65); }
+
         /* Download Button */
         .download-btn {
             background: rgba(59, 130, 246, 0.2); /* Blue transparent */
@@ -578,15 +610,7 @@
                     <div class="form-group">
                         <label class="form-label" for="voiceSelect">Voice</label>
                         <select id="voiceSelect">
-                            <option value="af_heart">🇺🇸 American Female (Heart)</option>
-                            <option value="af_sarah">🇺🇸 American Female (Sarah)</option>
-                            <option value="af_sky">🇺🇸 American Female (Sky)</option>
-                            <option value="am_adam">🇺🇸 American Male (Adam)</option>
-                            <option value="am_michael">🇺🇸 American Male (Michael)</option>
-                            <option value="bf_emma">🇬🇧 British Female (Emma)</option>
-                            <option value="bf_isabella">🇬🇧 British Female (Isabella)</option>
-                            <option value="bm_george">🇬🇧 British Male (George)</option>
-                            <option value="bm_lewis">🇬🇧 British Male (Lewis)</option>
+                            <option value="">Loading voices…</option>
                         </select>
                     </div>
                     
@@ -602,21 +626,42 @@
                 <div class="form-group">
                     <label class="form-label" for="langSelect">Language</label>
                     <select id="langSelect">
-                        <option value="a">🇺🇸 American English</option>
-                        <option value="b">🇬🇧 British English</option>
-                        <option value="e">🇪🇸 Spanish</option>
-                        <option value="f">🇫🇷 French</option>
-                        <option value="h">🇮🇳 Hindi</option>
-                        <option value="i">🇮🇹 Italian</option>
-                        <option value="j">🇯🇵 Japanese</option>
-                        <option value="p">🇧🇷 Portuguese (BR)</option>
-                        <option value="z">🇨🇳 Mandarin Chinese</option>
+                        <option value="">Loading languages…</option>
                     </select>
                 </div>
             </div>
             
     <button id="speakBtn" class="primary-btn">🎵 Generate Speech</button>
     <button id="stopBtn" class="secondary-btn" style="display:none;">⏹️ Stop</button>
+    <div style="margin-top:12px; display:flex; flex-direction:column; gap:8px;">
+        <div style="display:flex; align-items:center; justify-content:space-between;">
+            <label class="form-label" style="margin:0; font-size:12px;">Preload sentences</label>
+            <div style="display:flex; align-items:center; gap:6px;">
+                <input type="range" id="preloadAheadInput" min="1" max="20" value="10" style="width:90px; accent-color:#64ffda;">
+                <span id="preloadAheadValue" style="color:#64ffda; font-size:12px; min-width:18px; text-align:right;">10</span>
+            </div>
+        </div>
+        <div>
+            <label class="form-label" style="font-size:12px; margin-bottom:4px; display:block;">Main content selector</label>
+            <input type="text" id="contentSelectorInput" placeholder="article, main, .post-content" style="width:100%; padding:6px 8px; background:rgba(255,255,255,0.07); border:1px solid rgba(255,255,255,0.15); border-radius:6px; color:#fff; font-size:12px; outline:none;">
+        </div>
+        <div>
+            <label class="form-label" style="font-size:12px; margin-bottom:4px; display:block;">Ignore selector</label>
+            <input type="text" id="ignoreSelectorInput" placeholder=".ads, nav, footer, .sidebar" style="width:100%; padding:6px 8px; background:rgba(255,255,255,0.07); border:1px solid rgba(255,255,255,0.15); border-radius:6px; color:#fff; font-size:12px; outline:none;">
+        </div>
+    </div>
+    <button id="readAloudBtn" class="primary-btn" style="margin-top:10px;">📖 Read Aloud</button>
+    <button id="stopReadAloudBtn" class="secondary-btn" style="display:none; margin-top:8px;">⏹️ Stop Reading</button>
+    <div id="readAloudProgress" style="display:none; margin-top:10px;">
+        <div class="ra-track">
+            <div id="raPreload" class="ra-preload"></div>
+            <div id="raFill" class="ra-fill"></div>
+        </div>
+        <div class="ra-label">
+            <span id="raText">0 / 0 sentences</span>
+            <span id="raPreloadLabel"></span>
+        </div>
+    </div>
     
     <div class="audio-controls" id="audioControls" style="display:none;">
         <button id="downloadBtn" class="download-btn">📥 Download</button>

@@ -7,8 +7,9 @@
     "activeTab",
     "storage",
     "contextMenus",
-    "notifications",
-    "scripting"
+    "scripting",
+    "sidePanel",
+    "tabs"
   ],
   "host_permissions": [
     "http://localhost:8000/*",
@@ -19,23 +20,19 @@
   },
   "content_scripts": [
     {
-      "matches": [
-        "<all_urls>"
-      ],
-      "js": [
-        "content.js"
-      ],
-      "css": [
-        "styles.css"
-      ]
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "css": ["styles.css"]
     }
   ],
   "action": {
-    "default_popup": "popup.html",
     "default_title": "Kokoro TTS",
     "default_icon": {
       "48": "icons/icon-48.png"
     }
+  },
+  "side_panel": {
+    "default_path": "popup.html"
   },
   "icons": {
     "48": "icons/icon-48.png",
@@ -46,10 +43,5 @@
       "resources": ["player.html", "player.js"],
       "matches": ["<all_urls>"]
     }
-  ],
-  "browser_specific_settings": {
-    "gecko": {
-      "id": "{a5677b62-903a-4d6e-aa24-155567aecdfb}"
-    }
-  }
+  ]
 }

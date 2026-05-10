@@ -24,6 +24,42 @@ const getSelectionBtn = document.getElementById('getSelection');
 const getPageBtn = document.getElementById('getPage');
 const clearTextBtn = document.getElementById('clearText');
 
+// Read Aloud buttons and progress
+const readAloudBtn = document.getElementById('readAloudBtn');
+const stopReadAloudBtn = document.getElementById('stopReadAloudBtn');
+const preloadAheadInput = document.getElementById('preloadAheadInput');
+const preloadAheadValue = document.getElementById('preloadAheadValue');
+const contentSelectorInput = document.getElementById('contentSelectorInput');
+const ignoreSelectorInput = document.getElementById('ignoreSelectorInput');
+const readAloudProgress = document.getElementById('readAloudProgress');
+const raFill = document.getElementById('raFill');
+const raPreload = document.getElementById('raPreload');
+const raText = document.getElementById('raText');
+const raPreloadLabel = document.getElementById('raPreloadLabel');
+
+// Listen for progress updates from content.js
+chrome.runtime.onMessage.addListener((request) => {
+    if (request.action === 'readAloudProgress') {
+        const { current, total, preloaded } = request;
+        readAloudProgress.style.display = 'block';
+        const pct = total > 0 ? (current / total) * 100 : 0;
+        const preloadPct = total > 0 ? Math.min((current + preloaded) / total * 100, 100) : 0;
+        raFill.style.width = pct + '%';
+        raPreload.style.width = preloadPct + '%';
+        raText.textContent = `${current} / ${total} sentences`;
+        raPreloadLabel.textContent = preloaded > 0 ? `+${preloaded} preloaded` : '';
+    } else if (request.action === 'readAloudDone') {
+        raText.textContent = 'Complete!';
+        raFill.style.width = '100%';
+        raPreloadLabel.textContent = '';
+        setTimeout(() => {
+            readAloudProgress.style.display = 'none';
+            readAloudBtn.style.display = 'block';
+            stopReadAloudBtn.style.display = 'none';
+        }, 2000);
+    }
+});
+
 // Voice and Language Mappings for display (can be extended)
 const VOICE_DISPLAY_NAMES = {
     'vi_default': 'Vietnamese (Default)',
@@ -94,6 +130,48 @@ function setupEventListeners() {
 
     audioPlayer.addEventListener('loadstart', () => {
         showAudioControls();
+    });
+
+    // Preload slider
+    preloadAheadInput.addEventListener('input', () => {
+        const val = preloadAheadInput.value;
+        preloadAheadValue.textContent = val;
+        chrome.storage.local.set({ preloadAhead: parseInt(val) });
+    });
+
+    // Selector fields — save on change
+    contentSelectorInput.addEventListener('change', () => {
+        chrome.storage.local.set({ contentSelector: contentSelectorInput.value.trim() });
+    });
+    ignoreSelectorInput.addEventListener('change', () => {
+        chrome.storage.local.set({ ignoreSelector: ignoreSelectorInput.value.trim() });
+    });
+
+    // Read Aloud buttons
+    readAloudBtn.addEventListener('click', async () => {
+        const tabs = await chrome.tabs.query({active: true, currentWindow: true});
+        if (!tabs[0]) return;
+        try {
+            await chrome.tabs.sendMessage(tabs[0].id, {
+                action: 'startReadAloud',
+                preloadAhead: parseInt(preloadAheadInput.value),
+                contentSelector: contentSelectorInput.value.trim(),
+                ignoreSelector: ignoreSelectorInput.value.trim()
+            });
+            readAloudBtn.style.display = 'none';
+            stopReadAloudBtn.style.display = 'block';
+        } catch (e) {
+            showStatus('Reload the page first, then try again.', 'error');
+        }
+    });
+
+    stopReadAloudBtn.addEventListener('click', async () => {
+        const tabs = await chrome.tabs.query({active: true, currentWindow: true});
+        if (tabs[0]) {
+            try { await chrome.tabs.sendMessage(tabs[0].id, { action: 'stopReadAloud' }); } catch (e) {}
+        }
+        readAloudBtn.style.display = 'block';
+        stopReadAloudBtn.style.display = 'none';
     });
 }
 
@@ -180,10 +258,16 @@ function cleanupAudioResources() {
 async function loadSettings() {
     try {
         const result = await browser.storage.local.get({
-            voice: 'vi_default', // Default voice
-            speed: 1.0,          // Default speed
-            language: 'vi'       // Default language (Vietnamese)
+            voice: 'vi_default',
+            speed: 1.0,
+            language: 'vi',
+            preloadAhead: 10
         });
+
+        preloadAheadInput.value = result.preloadAhead;
+        preloadAheadValue.textContent = result.preloadAhead;
+        contentSelectorInput.value = result.contentSelector || '';
+        ignoreSelectorInput.value = result.ignoreSelector || '';
 
         // Only set the value if the option exists, otherwise default will be used
         if (Array.from(voiceSelect.options).some(option => option.value === result.voice)) {

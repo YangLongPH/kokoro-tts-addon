@@ -1,11 +1,14 @@
 // Background script for Kokoro TTS addon
-// This script runs continuously in the background to listen for browser events.
 const browser = chrome;
+
+// Open side panel only for the clicked tab (not globally across all tabs)
+chrome.action.onClicked.addListener((tab) => {
+    chrome.sidePanel.open({ tabId: tab.id });
+});
 
 // Function to create context menu items
 function createContextMenuItems() {
-    // Remove existing items first to avoid duplicates
-    browser.contextMenus.removeAll().then(() => {
+    chrome.contextMenus.removeAll(() => {
         // Create context menu item for speaking selected text.
         // This item appears when text is selected on a webpage.
         browser.contextMenus.create({
@@ -103,9 +106,9 @@ async function speakText(text, tabId) {
 
     try {
         const settings = await browser.storage.local.get({
-            voice: 'af_heart',
+            voice: 'vi_default',
             speed: 1.0,
-            language: 'a'
+            language: 'vi'
         });
         
         console.log("Background Script: Sending request to TTS server with settings:", settings);

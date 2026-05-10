@@ -349,6 +349,201 @@
         }, '*'); // Use '*' for simplicity, or getURL origin for more security
     }
 
+    // ─── Read Aloud ────────────────────────────────────────────────────────────
+
+    let readAloudActive = false;
+    let readAloudSentences = [];
+    let readAloudIndex = 0;
+    const preloadCache = {};   // index → Promise<objectURL>
+    let PRELOAD_AHEAD = 10;
+    let currentReadAudio = null;
+
+    function extractMainContent(customSelector) {
+        if (customSelector) {
+            try {
+                const el = document.querySelector(customSelector);
+                if (el) return el;
+            } catch (e) { console.warn('Invalid content selector:', customSelector); }
+        }
+        const selectors = [
+            'article', 'main', '[role="main"]',
+            '.post-content', '.article-body', '.entry-content',
+            '.post-body', '.story-body', '.article-content',
+            '#content', '.content', '.main-content'
+        ];
+        for (const sel of selectors) {
+            const el = document.querySelector(sel);
+            if (el && el.innerText.trim().length > 300) return el;
+        }
+        let best = null, maxScore = 0;
+        document.querySelectorAll('div, section').forEach(el => {
+            const pCount = el.querySelectorAll('p').length;
+            const len = el.innerText.trim().length;
+            const score = len + pCount * 150;
+            if (score > maxScore && len > 300 && len < 200000) {
+                maxScore = score; best = el;
+            }
+        });
+        return best || document.body;
+    }
+
+    function splitSentences(text) {
+        const raw = text.match(/[^.!?]+[.!?]*[\s]*/g) || [text];
+        return raw.map(s => s.trim()).filter(s => s.length > 2);
+    }
+
+    function escapeHtml(str) {
+        return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+
+    function wrapContentSentences(container, ignoreSelector) {
+        const sentences = [];
+        const nodes = container.querySelectorAll('p, h1, h2, h3, h4, li');
+        nodes.forEach(node => {
+            if (ignoreSelector) {
+                try {
+                    if (node.matches(ignoreSelector) || node.closest(ignoreSelector)) return;
+                } catch (e) { console.warn('Invalid ignore selector:', ignoreSelector); }
+            }
+            const text = node.innerText.trim();
+            if (!text || text.length < 3) return;
+            const parts = splitSentences(text);
+            let html = '';
+            parts.forEach(sent => {
+                const idx = sentences.length;
+                sentences.push(sent);
+                html += `<span data-kokoro-s="${idx}">${escapeHtml(sent)} </span>`;
+            });
+            node.innerHTML = html;
+        });
+        return sentences;
+    }
+
+    function highlightSentence(index) {
+        document.querySelectorAll('.kokoro-reading').forEach(el => el.classList.remove('kokoro-reading'));
+        const span = document.querySelector(`[data-kokoro-s="${index}"]`);
+        if (span) {
+            span.classList.add('kokoro-reading');
+            span.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+    }
+
+    async function fetchAudioUrl(text) {
+        const settings = await chrome.storage.local.get({ voice: 'vi_default', speed: 1.0, language: 'vi' });
+        const response = await fetch('http://localhost:8000/generate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text, voice: settings.voice, speed: settings.speed, language: settings.language })
+        });
+        if (!response.ok) throw new Error(`TTS error: ${response.status}`);
+        return URL.createObjectURL(await response.blob());
+    }
+
+    function preloadSentence(index) {
+        if (index >= readAloudSentences.length || preloadCache[index]) return;
+        preloadCache[index] = fetchAudioUrl(readAloudSentences[index]);
+    }
+
+    function playAudioUrl(url) {
+        return new Promise((resolve, reject) => {
+            currentReadAudio = new Audio(url);
+            currentReadAudio.onended = resolve;
+            currentReadAudio.onerror = reject;
+            currentReadAudio.play().catch(reject);
+        });
+    }
+
+    function sendProgress(current, total) {
+        let preloaded = 0;
+        for (let i = current; i < Math.min(current + PRELOAD_AHEAD + 1, total); i++) {
+            if (preloadCache[i]) preloaded++;
+        }
+        chrome.runtime.sendMessage({ action: 'readAloudProgress', current, total, preloaded }).catch(() => {});
+    }
+
+    async function readAloudLoop() {
+        const total = readAloudSentences.length;
+        sendProgress(0, total);
+
+        while (readAloudActive && readAloudIndex < total) {
+            const index = readAloudIndex;
+            if (!preloadCache[index]) preloadSentence(index);
+
+            let url;
+            try {
+                url = await preloadCache[index];
+            } catch (e) {
+                console.error('Preload failed for sentence', index, e);
+                readAloudIndex++;
+                continue;
+            }
+
+            if (!readAloudActive) break;
+
+            highlightSentence(index);
+            sendProgress(index + 1, total);
+
+            // Preload next sentences while this one plays
+            for (let i = 1; i <= PRELOAD_AHEAD; i++) preloadSentence(index + i);
+
+            try {
+                await playAudioUrl(url);
+            } catch (e) {
+                console.error('Playback error', e);
+            }
+
+            URL.revokeObjectURL(url);
+            delete preloadCache[index];
+            readAloudIndex++;
+        }
+
+        if (readAloudActive) {
+            showNotification('Reading complete!', 'success');
+            chrome.runtime.sendMessage({ action: 'readAloudDone' }).catch(() => {});
+        }
+        cleanupReadAloud(false);
+    }
+
+    function cleanupReadAloud(notify = true) {
+        readAloudActive = false;
+        if (currentReadAudio) { currentReadAudio.pause(); currentReadAudio = null; }
+        Object.entries(preloadCache).forEach(([k, p]) => {
+            p.then(url => URL.revokeObjectURL(url)).catch(() => {});
+            delete preloadCache[k];
+        });
+        document.querySelectorAll('.kokoro-reading').forEach(el => el.classList.remove('kokoro-reading'));
+        document.querySelectorAll('[data-kokoro-s]').forEach(el => {
+            el.replaceWith(document.createTextNode(el.textContent));
+        });
+        if (notify) showNotification('Reading stopped', 'info');
+    }
+
+    async function startReadAloud(preloadAhead, contentSelector, ignoreSelector) {
+        if (readAloudActive) { cleanupReadAloud(); return; }
+        if (preloadAhead) PRELOAD_AHEAD = preloadAhead;
+
+        const container = extractMainContent(contentSelector);
+        readAloudSentences = wrapContentSentences(container, ignoreSelector);
+        if (readAloudSentences.length === 0) {
+            showNotification('No readable text found', 'error'); return;
+        }
+
+        readAloudActive = true;
+        readAloudIndex = 0;
+        showNotification(`Starting — ${readAloudSentences.length} sentences`, 'loading');
+
+        for (let i = 0; i < Math.min(PRELOAD_AHEAD, readAloudSentences.length); i++) preloadSentence(i);
+
+        readAloudLoop();
+    }
+
+    // Stop Read Aloud with Escape key
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && readAloudActive) { cleanupReadAloud(); e.preventDefault(); }
+    });
+
+    // ───────────────────────────────────────────────────────────────────────────
+
     // Listener for messages from the background script to play audio OR show status
     browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
         if (request.action === 'playTTSAudio' && request.audioUrl) {
@@ -383,8 +578,16 @@
             return true;
         }
         else if (request.action === 'streamError') {
-            stopStreamingAudio(); // Ensure playback stops on error
+            stopStreamingAudio();
             showNotification(`Speech stream error: ${request.error}`, 'error');
+            sendResponse({success: true});
+            return true;
+        } else if (request.action === 'startReadAloud') {
+            startReadAloud(request.preloadAhead, request.contentSelector, request.ignoreSelector);
+            sendResponse({success: true});
+            return true;
+        } else if (request.action === 'stopReadAloud') {
+            cleanupReadAloud();
             sendResponse({success: true});
             return true;
         }
