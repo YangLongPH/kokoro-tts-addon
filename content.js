@@ -3,6 +3,7 @@
 
 (function() {
     'use strict';
+    const browser = chrome;
     
     let isFloatingButtonVisible = false;
     let floatingButton = null;

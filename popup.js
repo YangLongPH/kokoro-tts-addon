@@ -1,4 +1,5 @@
-// Popup script for Kokoro TTS Firefox addon
+// Popup script for Kokoro TTS addon
+const browser = chrome;
 let currentAudio = null;
 let currentAudioBlob = null;
 let currentAudioUrl = null;
@@ -227,18 +228,13 @@ async function saveSettings() {
 async function getSelectedText() {
     try {
         const tabs = await browser.tabs.query({active: true, currentWindow: true});
-        const results = await browser.tabs.executeScript(tabs[0].id, {
-            code: `
-                // IIFE to create a private scope for injected code
-                (function() {
-                    const pageSelection = window.getSelection();
-                    return pageSelection.toString().trim();
-                })(); // Immediately invoke the function
-            `
+        const results = await chrome.scripting.executeScript({
+            target: { tabId: tabs[0].id },
+            func: () => window.getSelection().toString().trim()
         });
 
-        if (results && results[0]) {
-            textInput.value = results[0];
+        if (results && results[0] && results[0].result) {
+            textInput.value = results[0].result;
             showStatus('Selected text captured!', 'success');
         } else {
             showStatus('No text selected', 'error');
@@ -256,40 +252,34 @@ async function getSelectedText() {
 async function getPageText() {
     try {
         const tabs = await browser.tabs.query({active: true, currentWindow: true});
-        const results = await browser.tabs.executeScript(tabs[0].id, {
-            code: `
-                // IIFE to create a private scope for injected code
-                (function() {
-                    const walker = document.createTreeWalker(
-                        document.body,
-                        NodeFilter.SHOW_TEXT,
-                        {
-                            acceptNode: function(node) {
-                                const parent = node.parentElement;
-                                if (parent && (parent.tagName === 'SCRIPT' || parent.tagName === 'STYLE')) {
-                                    return NodeFilter.FILTER_REJECT;
-                                }
-                                return NodeFilter.FILTER_ACCEPT;
+        const results = await chrome.scripting.executeScript({
+            target: { tabId: tabs[0].id },
+            func: () => {
+                const walker = document.createTreeWalker(
+                    document.body,
+                    NodeFilter.SHOW_TEXT,
+                    {
+                        acceptNode: function(node) {
+                            const parent = node.parentElement;
+                            if (parent && (parent.tagName === 'SCRIPT' || parent.tagName === 'STYLE')) {
+                                return NodeFilter.FILTER_REJECT;
                             }
-                        }
-                    );
-
-                    let pageContentText = '';
-                    let node;
-                    while (node = walker.nextNode()) {
-                        const nodeText = node.textContent.trim();
-                        if (nodeText) {
-                            pageContentText += nodeText + ' ';
+                            return NodeFilter.FILTER_ACCEPT;
                         }
                     }
-
-                    return pageContentText.trim().substring(0, 5000);
-                })(); // Immediately invoke the function
-            `
+                );
+                let pageContentText = '';
+                let node;
+                while (node = walker.nextNode()) {
+                    const nodeText = node.textContent.trim();
+                    if (nodeText) pageContentText += nodeText + ' ';
+                }
+                return pageContentText.trim().substring(0, 5000);
+            }
         });
 
-        if (results && results[0]) {
-            textInput.value = results[0];
+        if (results && results[0] && results[0].result) {
+            textInput.value = results[0].result;
             showStatus('Page text captured!', 'success');
         } else {
             showStatus('No text found on page', 'error');

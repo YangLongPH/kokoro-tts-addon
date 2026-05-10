@@ -1,5 +1,6 @@
 // Background script for Kokoro TTS addon
 // This script runs continuously in the background to listen for browser events.
+const browser = chrome;
 
 // Function to create context menu items
 function createContextMenuItems() {
@@ -47,43 +48,39 @@ browser.contextMenus.onClicked.addListener(async (info, tab) => {
         await speakText(info.selectionText, tab.id); 
     } else if (info.menuItemId === "kokoro-tts-page") {
         console.log("Background Script: Attempting to get entire page text from active tab.");
-        const results = await browser.tabs.executeScript(tab.id, {
-            code: `
-                (function() {
-                    const walker = document.createTreeWalker(
-                        document.body,
-                        NodeFilter.SHOW_TEXT,
-                        {
-                            acceptNode: function(node) {
-                                const parent = node.parentElement;
-                                if (parent && (parent.tagName === 'SCRIPT' || parent.tagName === 'STYLE')) {
-                                    return NodeFilter.FILTER_REJECT;
-                                }
-                                return NodeFilter.FILTER_ACCEPT;
+        const results = await chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            func: () => {
+                const walker = document.createTreeWalker(
+                    document.body,
+                    NodeFilter.SHOW_TEXT,
+                    {
+                        acceptNode: function(node) {
+                            const parent = node.parentElement;
+                            if (parent && (parent.tagName === 'SCRIPT' || parent.tagName === 'STYLE')) {
+                                return NodeFilter.FILTER_REJECT;
                             }
-                        }
-                    );
-                    
-                    let pageContentText = '';
-                    let node;
-                    while (node = walker.nextNode()) {
-                        const nodeText = node.textContent.trim();
-                        if (nodeText) {
-                            pageContentText += nodeText + ' ';
+                            return NodeFilter.FILTER_ACCEPT;
                         }
                     }
-                    return pageContentText.trim().substring(0, 5000); 
-                })();
-            `
+                );
+                let pageContentText = '';
+                let node;
+                while (node = walker.nextNode()) {
+                    const nodeText = node.textContent.trim();
+                    if (nodeText) {
+                        pageContentText += nodeText + ' ';
+                    }
+                }
+                return pageContentText.trim().substring(0, 5000);
+            }
         });
-        
-        if (results && results[0]) {
-            console.log("Background Script: Captured page text (first 100 chars):", results[0].substring(0, 100) + '...');
-            // Call speakText and pass the tab ID for page text as well
-            await speakText(results[0], tab.id);
+
+        if (results && results[0] && results[0].result) {
+            console.log("Background Script: Captured page text (first 100 chars):", results[0].result.substring(0, 100) + '...');
+            await speakText(results[0].result, tab.id);
         } else {
             console.warn("Background Script: No readable text found on page for 'Speak entire page'.");
-            // Removed system notification: browser.notifications.create for this case
         }
     }
 });
