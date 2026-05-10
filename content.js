@@ -8,7 +8,187 @@
     let isFloatingButtonVisible = false;
     let floatingButton = null;
     let lastSelection = '';
-    let audioPlayerIframe = null; // To hold the sandboxed audio player iframe
+    let audioPlayerIframe = null;
+    let panelIframe = null;
+    let _updatePlayPauseBtn = null; // set by injectPanel once button is created
+
+    // ─── In-page panel iframe ──────────────────────────────────────────────────
+
+    function injectPanel() {
+        if (document.getElementById('kokoro-panel-iframe')) return;
+
+        // Iframe — starts off-screen, slides in when opened
+        panelIframe = document.createElement('iframe');
+        panelIframe.id = 'kokoro-panel-iframe';
+        panelIframe.src = chrome.runtime.getURL('panel.html');
+        panelIframe.setAttribute('allowtransparency', 'true');
+        Object.assign(panelIframe.style, {
+            position: 'fixed', top: '0', right: '0',
+            width: '320px', height: '100vh',
+            border: 'none', zIndex: '2147483645',
+            background: 'transparent', colorScheme: 'normal',
+            transform: 'translateX(100%)',
+            transition: 'transform 0.3s ease',
+        });
+        document.body.appendChild(panelIframe);
+
+        // Send domain to panel once iframe is ready
+        panelIframe.addEventListener('load', () => {
+            sendToPanel({ action: 'pageInfo', domain: location.hostname });
+        });
+
+        // Button group — lives in the page, always reliable
+        let panelOpen = false;
+
+        const btnGroup = document.createElement('div');
+        btnGroup.id = 'kokoro-btn-group';
+        Object.assign(btnGroup.style, {
+            position: 'fixed', top: '50%', right: '0',
+            transform: 'translateY(-50%)',
+            display: 'flex', flexDirection: 'column', gap: '2px',
+            zIndex: '2147483647',
+            transition: 'right 0.3s ease',
+        });
+
+        const btnBase = {
+            width: '36px',
+            background: 'linear-gradient(135deg, #1a1a2e, #0f3460)',
+            border: '1px solid rgba(100,255,218,0.3)',
+            borderRight: 'none',
+            color: '#fff', fontSize: '18px', cursor: 'pointer',
+            padding: '0', lineHeight: '1',
+            boxShadow: '-2px 0 8px rgba(0,0,0,0.5)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+        };
+
+        const toggleBtn = document.createElement('button');
+        toggleBtn.id = 'kokoro-toggle-btn';
+        toggleBtn.textContent = '🎙️';
+        Object.assign(toggleBtn.style, {
+            ...btnBase,
+            height: '52px',
+            borderRadius: '8px 0 0 0',
+        });
+        toggleBtn.addEventListener('click', () => {
+            panelOpen = !panelOpen;
+            panelIframe.style.transform = panelOpen ? 'translateX(0)' : 'translateX(100%)';
+            btnGroup.style.right = panelOpen ? '320px' : '0';
+            toggleBtn.textContent = panelOpen ? '✕' : '🎙️';
+        });
+
+        const playPauseBtn = document.createElement('button');
+        playPauseBtn.id = 'kokoro-playpause-btn';
+        playPauseBtn.textContent = '▶️';
+        playPauseBtn.title = 'Start / Pause reading';
+        Object.assign(playPauseBtn.style, {
+            ...btnBase,
+            height: '52px',
+            borderRadius: '0 0 0 8px',
+            fontSize: '16px',
+        });
+
+        function updatePlayPauseBtn() {
+            if (!readAloudActive || readAloudPaused) {
+                playPauseBtn.textContent = '▶️';
+                playPauseBtn.title = readAloudPaused ? 'Resume reading' : 'Start reading';
+            } else {
+                playPauseBtn.textContent = '⏸️';
+                playPauseBtn.title = 'Pause reading';
+            }
+        }
+
+        playPauseBtn.addEventListener('click', async () => {
+            if (!readAloudActive) {
+                // Load config for current domain then start
+                const domainKey = `cfg::${location.hostname}`;
+                const stored = await chrome.storage.local.get({
+                    [domainKey]: null,
+                    preloadAhead: 10
+                });
+                const cfg = stored[domainKey] ?? { preloadAhead: stored.preloadAhead, contentSelector: '', ignoreSelector: '' };
+                startReadAloud(cfg.preloadAhead, cfg.contentSelector, cfg.ignoreSelector);
+                updatePlayPauseBtn();
+            } else if (!readAloudPaused) {
+                readAloudPaused = true;
+                if (currentReadAudio) currentReadAudio.pause();
+                updatePlayPauseBtn();
+            } else {
+                readAloudPaused = false;
+                if (currentReadAudio) currentReadAudio.play().catch(() => {});
+                updatePlayPauseBtn();
+            }
+        });
+
+        btnGroup.appendChild(toggleBtn);
+        btnGroup.appendChild(playPauseBtn);
+        document.body.appendChild(btnGroup);
+        _updatePlayPauseBtn = updatePlayPauseBtn;
+
+        // Relay messages from panel → read-aloud functions
+        window.addEventListener('message', async (e) => {
+            if (!e.data || e.data.source !== 'kokoro-panel') return;
+            const { action } = e.data;
+
+            if (action === 'getPageDomain') {
+                sendToPanel({ action: 'pageInfo', domain: location.hostname });
+
+            } else if (action === 'closePanel') {
+                panelOpen = false;
+                panelIframe.style.transform = 'translateX(100%)';
+                btnGroup.style.right = '0';
+                toggleBtn.textContent = '🎙️';
+
+            } else if (action === 'startReadAloud') {
+                startReadAloud(e.data.preloadAhead, e.data.contentSelector, e.data.ignoreSelector);
+
+            } else if (action === 'pauseReadAloud') {
+                readAloudPaused = true;
+                if (currentReadAudio) currentReadAudio.pause();
+                if (_updatePlayPauseBtn) _updatePlayPauseBtn();
+
+            } else if (action === 'resumeReadAloud') {
+                readAloudPaused = false;
+                if (currentReadAudio) currentReadAudio.play().catch(() => {});
+                if (_updatePlayPauseBtn) _updatePlayPauseBtn();
+
+            } else if (action === 'stopReadAloud') {
+                cleanupReadAloud();
+
+            } else if (action === 'getSelection') {
+                const text = window.getSelection().toString().trim();
+                sendToPanel({ action: 'selectionResult', text });
+
+            } else if (action === 'getPageText') {
+                const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+                    acceptNode: n => (n.parentElement?.tagName === 'SCRIPT' || n.parentElement?.tagName === 'STYLE')
+                        ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT
+                });
+                let text = '';
+                let node;
+                while ((node = walker.nextNode())) {
+                    const t = node.textContent.trim();
+                    if (t) text += t + ' ';
+                }
+                sendToPanel({ action: 'pageTextResult', text: text.trim().substring(0, 5000) });
+
+            } else if (action === 'generateTTS') {
+                // Forward to background script for streaming
+                chrome.runtime.sendMessage({ action: 'generateTTS', text: e.data.text }).catch(() => {});
+            }
+        });
+    }
+
+    function sendToPanel(data) {
+        if (panelIframe && panelIframe.contentWindow) {
+            panelIframe.contentWindow.postMessage({ ...data, source: 'kokoro-content' }, '*');
+        }
+    }
+
+    if (document.body) {
+        injectPanel();
+    } else {
+        document.addEventListener('DOMContentLoaded', injectPanel, { once: true });
+    }
 
     let audioContext;
     let audioQueue = [];
@@ -569,7 +749,9 @@
             if (preloadReady.has(i)) preloaded++;
         }
         const totalCached = preloadReady.size;
-        chrome.runtime.sendMessage({ action: 'readAloudProgress', current, total, preloaded, totalCached }).catch(() => {});
+        const msg = { action: 'readAloudProgress', current, total, preloaded, totalCached };
+        chrome.runtime.sendMessage(msg).catch(() => {});
+        sendToPanel(msg);
     }
 
     async function readAloudLoop() {
@@ -617,6 +799,7 @@
         if (readAloudActive) {
             showNotification('Reading complete!', 'success');
             chrome.runtime.sendMessage({ action: 'readAloudDone' }).catch(() => {});
+            sendToPanel({ action: 'readAloudDone' });
             await tryAutoNextChapter();
         }
         cleanupReadAloud(false);
@@ -658,9 +841,11 @@
     }
 
     async function tryAutoNextChapter() {
-        const settings = await chrome.storage.local.get({ autoNextChapter: false, nextChapterSelector: '' });
+        const domainKey = `cfg::${location.hostname}`;
+        const stored = await chrome.storage.local.get({ [domainKey]: null });
+        const settings = stored[domainKey] ?? {};
         if (!settings.autoNextChapter) return;
-        const nextUrl = findNextChapterLink(settings.nextChapterSelector);
+        const nextUrl = findNextChapterLink(settings.nextChapterSelector || '');
         if (!nextUrl) { showNotification('No next chapter found', 'error'); return; }
         showNotification('Next chapter in 2s…', 'info');
         await chrome.storage.local.set({ _autoStartReadAloud: true });
@@ -677,6 +862,7 @@
         const s = await chrome.storage.local.get({ preloadAhead: 10, contentSelector: '', ignoreSelector: '' });
         startReadAloud(s.preloadAhead, s.contentSelector, s.ignoreSelector);
         chrome.runtime.sendMessage({ action: 'readAloudAutoStarted' }).catch(() => {});
+        sendToPanel({ action: 'readAloudAutoStarted' });
     }
 
     if (document.readyState === 'loading') {
@@ -701,6 +887,7 @@
             el.replaceWith(document.createTextNode(el.textContent));
         });
         if (notify) showNotification('Reading stopped', 'info');
+        if (_updatePlayPauseBtn) _updatePlayPauseBtn();
     }
 
     async function startReadAloud(preloadAhead, contentSelector, ignoreSelector) {
@@ -715,6 +902,7 @@
 
         readAloudActive = true;
         readAloudIndex = 0;
+        if (_updatePlayPauseBtn) _updatePlayPauseBtn();
         injectHighlightStyle();
         startDOMObserver(container);
 

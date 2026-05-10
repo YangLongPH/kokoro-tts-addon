@@ -1,11 +1,9 @@
-// Popup script for Kokoro TTS addon
 const browser = chrome;
 let currentAudio = null;
 let currentAudioBlob = null;
 let currentAudioUrl = null;
 let isGenerating = false;
 
-// DOM elements
 const textInput = document.getElementById('textInput');
 const voiceSelect = document.getElementById('voiceSelect');
 const speedInput = document.getElementById('speedInput');
@@ -18,321 +16,124 @@ const audioPlayer = document.getElementById('audioPlayer');
 const audioControls = document.getElementById('audioControls');
 const downloadBtn = document.getElementById('downloadBtn');
 const replayBtn = document.getElementById('replayBtn');
-
-// Quick action buttons
 const getSelectionBtn = document.getElementById('getSelection');
 const getPageBtn = document.getElementById('getPage');
 const clearTextBtn = document.getElementById('clearText');
 
-// Read Aloud buttons and progress
-const readAloudBtn = document.getElementById('readAloudBtn');
-const pauseReadAloudBtn = document.getElementById('pauseReadAloudBtn');
-const stopReadAloudBtn = document.getElementById('stopReadAloudBtn');
-const preloadAheadInput = document.getElementById('preloadAheadInput');
-const preloadAheadValue = document.getElementById('preloadAheadValue');
-const contentSelectorInput = document.getElementById('contentSelectorInput');
-const ignoreSelectorInput = document.getElementById('ignoreSelectorInput');
-const saveReadAloudConfig = document.getElementById('saveReadAloudConfig');
-const autoNextChapter = document.getElementById('autoNextChapter');
-const nextChapterSelectorInput = document.getElementById('nextChapterSelectorInput');
-const readAloudProgress = document.getElementById('readAloudProgress');
-const raFill = document.getElementById('raFill');
-const raPreload = document.getElementById('raPreload');
-const raText = document.getElementById('raText');
-const raPreloadLabel = document.getElementById('raPreloadLabel');
-const raCacheText = document.getElementById('raCacheText');
-
-// Listen for progress updates from content.js
-chrome.runtime.onMessage.addListener((request) => {
-    if (request.action === 'readAloudProgress') {
-        const { current, total, preloaded, totalCached } = request;
-        readAloudProgress.style.display = 'block';
-        const pct = total > 0 ? (current / total) * 100 : 0;
-        const preloadPct = total > 0 ? Math.min((current + preloaded) / total * 100, 100) : 0;
-        raFill.style.width = pct + '%';
-        raPreload.style.width = preloadPct + '%';
-        raText.textContent = `${current} / ${total} sentences`;
-        raPreloadLabel.textContent = preloaded > 0 ? `+${preloaded} preloaded` : '';
-        raCacheText.textContent = `${totalCached ?? 0} / ${total} cache`;
-    } else if (request.action === 'readAloudAutoStarted') {
-        readAloudBtn.style.display = 'none';
-        pauseReadAloudBtn.style.display = 'block';
-        pauseReadAloudBtn.textContent = '⏸️ Pause';
-        stopReadAloudBtn.style.display = 'block';
-        readAloudProgress.style.display = 'block';
-    } else if (request.action === 'readAloudDone') {
-        raText.textContent = 'Complete!';
-        raFill.style.width = '100%';
-        raPreloadLabel.textContent = '';
-        raCacheText.textContent = '';
-        setTimeout(() => {
-            readAloudProgress.style.display = 'none';
-            readAloudBtn.style.display = 'block';
-            pauseReadAloudBtn.style.display = 'none';
-            pauseReadAloudBtn.textContent = '⏸️ Pause';
-            stopReadAloudBtn.style.display = 'none';
-        }, 2000);
-    }
-});
-
-// Voice and Language Mappings for display (can be extended)
-const VOICE_DISPLAY_NAMES = {
-    'vi_default': 'Vietnamese (Default)',
-};
-
+const VOICE_DISPLAY_NAMES = { 'vi_default': 'Vietnamese (Default)' };
 const LANGUAGE_DISPLAY_NAMES = {
-    'vi': '🇻🇳 Vietnamese',
-    'en': '🇺🇸 English',
-    'fr': '🇫🇷 French',
-    'es': '🇪🇸 Spanish',
-    'de': '🇩🇪 German',
-    'it': '🇮🇹 Italian',
-    'pt': '🇧🇷 Portuguese',
-    'zh-cn': '🇨🇳 Chinese',
-    'ja': '🇯🇵 Japanese',
-    'ko': '🇰🇷 Korean',
-    'hi': '🇮🇳 Hindi',
+    'vi': '🇻🇳 Vietnamese', 'en': '🇺🇸 English', 'fr': '🇫🇷 French',
+    'es': '🇪🇸 Spanish',   'de': '🇩🇪 German',  'it': '🇮🇹 Italian',
+    'pt': '🇧🇷 Portuguese', 'zh-cn': '🇨🇳 Chinese', 'ja': '🇯🇵 Japanese',
+    'ko': '🇰🇷 Korean',    'hi': '🇮🇳 Hindi',
 };
 
-// Initialize on DOM content loaded
 document.addEventListener('DOMContentLoaded', async () => {
-    await populateDropdownsFromSever(); // Populate dropdowns first
-    await loadSettings(); // Then load user settings
+    await populateDropdownsFromServer();
+    await loadSettings();
     setupEventListeners();
     checkServerStatus();
 });
 
-/**
- * Sets up all event listeners for the popup UI elements.
- */
 function setupEventListeners() {
-    // Update speed value display when slider moves
     speedInput.addEventListener('input', (e) => {
         speedValue.textContent = e.target.value + 'x';
     });
 
-    // Main speak and stop buttons
     speakBtn.addEventListener('click', generateSpeech);
     stopBtn.addEventListener('click', stopSpeech);
-
-    // Audio control buttons
     downloadBtn.addEventListener('click', downloadAudio);
     replayBtn.addEventListener('click', replayAudio);
 
-    // Quick action buttons
-    getSelectionBtn.addEventListener('click', getSelectedText);
-    getPageBtn.addEventListener('click', getPageText);
+    getSelectionBtn.addEventListener('click', async () => {
+        try {
+            const tabs = await browser.tabs.query({ active: true, currentWindow: true });
+            const results = await chrome.scripting.executeScript({
+                target: { tabId: tabs[0].id },
+                func: () => window.getSelection().toString().trim()
+            });
+            const text = results?.[0]?.result;
+            if (text) { textInput.value = text; showStatus('Selected text captured!', 'success'); }
+            else showStatus('No text selected', 'error');
+        } catch (e) { showStatus('Failed to get selection', 'error'); }
+    });
+
+    getPageBtn.addEventListener('click', async () => {
+        try {
+            const tabs = await browser.tabs.query({ active: true, currentWindow: true });
+            const results = await chrome.scripting.executeScript({
+                target: { tabId: tabs[0].id },
+                func: () => {
+                    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+                        acceptNode: n => (n.parentElement?.tagName === 'SCRIPT' || n.parentElement?.tagName === 'STYLE')
+                            ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT
+                    });
+                    let text = ''; let node;
+                    while ((node = walker.nextNode())) { const t = node.textContent.trim(); if (t) text += t + ' '; }
+                    return text.trim().substring(0, 5000);
+                }
+            });
+            const text = results?.[0]?.result;
+            if (text) { textInput.value = text; showStatus('Page text captured!', 'success'); }
+            else showStatus('No text found', 'error');
+        } catch (e) { showStatus('Failed to get page text', 'error'); }
+    });
+
     clearTextBtn.addEventListener('click', () => {
         textInput.value = '';
         hideAudioControls();
     });
 
-    // Auto-save settings when voice, speed, or language selection changes
-    [voiceSelect, speedInput, langSelect].forEach(element => {
-        element.addEventListener('change', saveSettings);
-    });
+    [voiceSelect, speedInput, langSelect].forEach(el => el.addEventListener('change', saveSettings));
 
-    // Auto-resize text area as user types
-    textInput.addEventListener('input', function() {
-        this.style.height = 'auto'; // Reset height to recalculate
-        this.style.height = this.scrollHeight + 'px'; // Set height to scroll height
-    });
-
-    // Audio player event listeners
-    audioPlayer.addEventListener('ended', () => {
-        resetUI();
-    });
-
-    audioPlayer.addEventListener('loadstart', () => {
-        showAudioControls();
-    });
-
-    // Preload slider — update display only, saved via Save button
-    preloadAheadInput.addEventListener('input', () => {
-        preloadAheadValue.textContent = preloadAheadInput.value;
-    });
-
-    // Save config button
-    saveReadAloudConfig.addEventListener('click', async () => {
-        await chrome.storage.local.set({
-            preloadAhead: parseInt(preloadAheadInput.value),
-            contentSelector: contentSelectorInput.value.trim(),
-            ignoreSelector: ignoreSelectorInput.value.trim(),
-            autoNextChapter: autoNextChapter.checked,
-            nextChapterSelector: nextChapterSelectorInput.value.trim()
-        });
-        const orig = saveReadAloudConfig.textContent;
-        saveReadAloudConfig.textContent = '✓ Saved';
-        setTimeout(() => { saveReadAloudConfig.textContent = orig; }, 1500);
-    });
-
-    // Read Aloud buttons
-    readAloudBtn.addEventListener('click', async () => {
-        const tabs = await chrome.tabs.query({active: true, currentWindow: true});
-        if (!tabs[0]) return;
-        try {
-            await chrome.tabs.sendMessage(tabs[0].id, {
-                action: 'startReadAloud',
-                preloadAhead: parseInt(preloadAheadInput.value),
-                contentSelector: contentSelectorInput.value.trim(),
-                ignoreSelector: ignoreSelectorInput.value.trim()
-            });
-            readAloudBtn.style.display = 'none';
-            pauseReadAloudBtn.style.display = 'block';
-            stopReadAloudBtn.style.display = 'block';
-        } catch (e) {
-            showStatus('Reload the page first, then try again.', 'error');
-        }
-    });
-
-    pauseReadAloudBtn.addEventListener('click', async () => {
-        const tabs = await chrome.tabs.query({active: true, currentWindow: true});
-        if (!tabs[0]) return;
-        const isPaused = pauseReadAloudBtn.textContent.startsWith('⏸');
-        try {
-            await chrome.tabs.sendMessage(tabs[0].id, {
-                action: isPaused ? 'pauseReadAloud' : 'resumeReadAloud'
-            });
-            pauseReadAloudBtn.textContent = isPaused ? '▶️ Resume' : '⏸️ Pause';
-        } catch (e) {}
-    });
-
-    stopReadAloudBtn.addEventListener('click', async () => {
-        const tabs = await chrome.tabs.query({active: true, currentWindow: true});
-        if (tabs[0]) {
-            try { await chrome.tabs.sendMessage(tabs[0].id, { action: 'stopReadAloud' }); } catch (e) {}
-        }
-        readAloudBtn.style.display = 'block';
-        pauseReadAloudBtn.style.display = 'none';
-        pauseReadAloudBtn.textContent = '⏸️ Pause';
-        stopReadAloudBtn.style.display = 'none';
-    });
+    audioPlayer.addEventListener('ended', resetUI);
+    audioPlayer.addEventListener('loadstart', showAudioControls);
 }
 
-/**
- * Shows the audio control buttons (download/replay)
- */
 function showAudioControls() {
     audioControls.style.display = 'block';
     downloadBtn.disabled = !currentAudioBlob;
 }
 
-/**
- * Hides the audio control buttons
- */
 function hideAudioControls() {
     audioControls.style.display = 'none';
     cleanupAudioResources();
 }
 
-/**
- * Downloads the current audio file
- */
 function downloadAudio() {
-    if (!currentAudioBlob) {
-        showStatus('No audio to download', 'error');
-        return;
-    }
-
-    try {
-        // Create filename with timestamp and voice info
-        const timestamp = new Date().toISOString().slice(0, 19).replace(/[:.]/g, '-');
-        const voice = voiceSelect.options[voiceSelect.selectedIndex].text.replace(/[^a-zA-Z0-9]/g, '_');
-        const filename = `kokoro_tts_${voice}_${timestamp}.wav`;
-
-        // Create download link
-        const downloadUrl = URL.createObjectURL(currentAudioBlob);
-        const a = document.createElement('a');
-        a.href = downloadUrl;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-
-        // Clean up the download URL
-        setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
-
-        showStatus('Audio downloaded successfully!', 'success');
-    } catch (error) {
-        console.error('Download error:', error);
-        showStatus('Failed to download audio', 'error');
-    }
+    if (!currentAudioBlob) { showStatus('No audio to download', 'error'); return; }
+    const timestamp = new Date().toISOString().slice(0, 19).replace(/[:.]/g, '-');
+    const voice = voiceSelect.options[voiceSelect.selectedIndex]?.text.replace(/[^a-zA-Z0-9]/g, '_') || 'tts';
+    const a = Object.assign(document.createElement('a'), {
+        href: URL.createObjectURL(currentAudioBlob),
+        download: `kokoro_${voice}_${timestamp}.wav`
+    });
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    showStatus('Downloaded!', 'success');
 }
 
-/**
- * Replays the current audio
- */
 function replayAudio() {
-    if (audioPlayer.src) {
-        audioPlayer.currentTime = 0;
-        audioPlayer.play();
-        showStatus('Replaying audio...', 'success');
-    } else {
-        showStatus('No audio to replay', 'error');
-    }
+    if (audioPlayer.src) { audioPlayer.currentTime = 0; audioPlayer.play(); }
 }
 
-/**
- * Cleans up audio resources (URLs and references)
- */
 function cleanupAudioResources() {
-    if (currentAudioUrl) {
-        URL.revokeObjectURL(currentAudioUrl);
-        currentAudioUrl = null;
-    }
+    if (currentAudioUrl) { URL.revokeObjectURL(currentAudioUrl); currentAudioUrl = null; }
     currentAudioBlob = null;
     audioPlayer.src = '';
     audioPlayer.style.display = 'none';
 }
 
-/**
- * Loads user settings (voice, speed, language) from Firefox local storage
- * and updates the UI elements accordingly.
- */
 async function loadSettings() {
     try {
-        const result = await browser.storage.local.get({
-            voice: 'vi_default',
-            speed: 1.0,
-            language: 'vi',
-            preloadAhead: 10,
-            contentSelector: '',
-            ignoreSelector: '',
-            autoNextChapter: false,
-            nextChapterSelector: ''
-        });
-
-        preloadAheadInput.value = result.preloadAhead;
-        preloadAheadValue.textContent = result.preloadAhead;
-        contentSelectorInput.value = result.contentSelector;
-        ignoreSelectorInput.value = result.ignoreSelector;
-        autoNextChapter.checked = result.autoNextChapter;
-        nextChapterSelectorInput.value = result.nextChapterSelector;
-
-        // Only set the value if the option exists, otherwise default will be used
-        if (Array.from(voiceSelect.options).some(option => option.value === result.voice)) {
-            voiceSelect.value = result.voice;
-        } else {
-            voiceSelect.selectedIndex = 0; // Fallback to first available voice
-        }
-
-        speedInput.value = result.speed;
-        speedValue.textContent = result.speed + 'x';
-
-        if (Array.from(langSelect.options).some(option => option.value === result.language)) {
-            langSelect.value = result.language;
-        } else {
-            langSelect.selectedIndex = 0; // Fallback to first available language
-        }
-
-    } catch (error) {
-        console.error('Failed to load settings:', error);
-    }
+        const r = await browser.storage.local.get({ voice: 'vi_default', speed: 1.0, language: 'vi' });
+        if (Array.from(voiceSelect.options).some(o => o.value === r.voice)) voiceSelect.value = r.voice;
+        speedInput.value = r.speed;
+        speedValue.textContent = r.speed + 'x';
+        if (Array.from(langSelect.options).some(o => o.value === r.language)) langSelect.value = r.language;
+    } catch (e) { console.error('Failed to load settings:', e); }
 }
 
-/**
- * Saves current user settings (voice, speed, language) to Firefox local storage.
- */
 async function saveSettings() {
     try {
         await browser.storage.local.set({
@@ -340,161 +141,50 @@ async function saveSettings() {
             speed: parseFloat(speedInput.value),
             language: langSelect.value
         });
-    } catch (error) {
-        console.error('Failed to save settings:', error);
-    }
+    } catch (e) { console.error('Failed to save settings:', e); }
 }
 
-/**
- * Gets the currently selected text from the active tab and populates the text input.
- * The injected code is wrapped in an IIFE to prevent variable conflicts.
- */
-async function getSelectedText() {
-    try {
-        const tabs = await browser.tabs.query({active: true, currentWindow: true});
-        const results = await chrome.scripting.executeScript({
-            target: { tabId: tabs[0].id },
-            func: () => window.getSelection().toString().trim()
-        });
-
-        if (results && results[0] && results[0].result) {
-            textInput.value = results[0].result;
-            showStatus('Selected text captured!', 'success');
-        } else {
-            showStatus('No text selected', 'error');
-        }
-    } catch (error) {
-        console.error('Error getting selected text:', error);
-        showStatus('Failed to get selection: ' + error.message, 'error');
-    }
-}
-
-/**
- * Gets the main visible text content from the active tab and populates the text input.
- * It uses a TreeWalker and is wrapped in an IIFE to prevent variable conflicts.
- */
-async function getPageText() {
-    try {
-        const tabs = await browser.tabs.query({active: true, currentWindow: true});
-        const results = await chrome.scripting.executeScript({
-            target: { tabId: tabs[0].id },
-            func: () => {
-                const walker = document.createTreeWalker(
-                    document.body,
-                    NodeFilter.SHOW_TEXT,
-                    {
-                        acceptNode: function(node) {
-                            const parent = node.parentElement;
-                            if (parent && (parent.tagName === 'SCRIPT' || parent.tagName === 'STYLE')) {
-                                return NodeFilter.FILTER_REJECT;
-                            }
-                            return NodeFilter.FILTER_ACCEPT;
-                        }
-                    }
-                );
-                let pageContentText = '';
-                let node;
-                while (node = walker.nextNode()) {
-                    const nodeText = node.textContent.trim();
-                    if (nodeText) pageContentText += nodeText + ' ';
-                }
-                return pageContentText.trim().substring(0, 5000);
-            }
-        });
-
-        if (results && results[0] && results[0].result) {
-            textInput.value = results[0].result;
-            showStatus('Page text captured!', 'success');
-        } else {
-            showStatus('No text found on page', 'error');
-        }
-    } catch (error) {
-        console.error('Error getting page text:', error);
-        showStatus('Failed to get page text: ' + error.message, 'error');
-    }
-}
-
-/**
- * Checks the status of the local Kokoro TTS server by pinging its health endpoint.
- * Also populates the voice and language dropdowns if the server is healthy.
- */
 async function checkServerStatus() {
     try {
-        const response = await fetch('http://localhost:8000/health');
-        if (response.ok) {
-            showStatus('Kokoro server connected ✓', 'success');
-            // We already populate on DOMContentLoaded, but this can serve as a re-check
-            // if needed. For now, it's primarily for status message.
-        } else {
-            showStatus('Kokoro server not responding', 'error');
-        }
-    } catch (error) {
-        console.error('Error checking server status:', error);
-        showStatus('Kokoro server not running - Start local server first', 'error');
+        const r = await fetch('http://localhost:8000/health');
+        showStatus(r.ok ? 'Server connected ✓' : 'Server not responding', r.ok ? 'success' : 'error');
+    } catch (e) {
+        showStatus('Server not running — start python server.py first', 'error');
     }
 }
 
-/**
- * Fetches available voices and languages from the server and populates the dropdowns.
- */
-async function populateDropdownsFromSever() {
+async function populateDropdownsFromServer() {
     try {
-        const response = await fetch('http://localhost:8000/health');
-        if (response.ok) {
-            const data = await response.json();
-
-            // Clear existing options
-            voiceSelect.innerHTML = '';
-            langSelect.innerHTML = '';
-
-            // Populate Voice dropdown
-            const voiceLabels = data.voice_labels || {};
-            data.available_voices.forEach(voiceCode => {
-                const option = document.createElement('option');
-                option.value = voiceCode;
-                option.textContent = voiceLabels[voiceCode] || VOICE_DISPLAY_NAMES[voiceCode] || voiceCode;
-                voiceSelect.appendChild(option);
-            });
-
-            // Populate Language dropdown
-            const langLabels = data.language_labels || {};
-            data.available_languages.forEach(langCode => {
-                const option = document.createElement('option');
-                option.value = langCode;
-                option.textContent = langLabels[langCode] || LANGUAGE_DISPLAY_NAMES[langCode] || langCode;
-                langSelect.appendChild(option);
-            });
-
-        } else {
-            console.error('Failed to fetch server capabilities:', response.statusText);
-            showStatus('Failed to load voices/languages from server.', 'error');
-            // Optionally, if server is down, you might want to disable speak button
-            speakBtn.disabled = true;
-        }
-    } catch (error) {
-        console.error('Error fetching server capabilities:', error);
-        showStatus('Could not connect to TTS server to get available options.', 'error');
-        speakBtn.disabled = true; // Disable if server isn't reachable
+        const r = await fetch('http://localhost:8000/health');
+        if (!r.ok) { speakBtn.disabled = true; return; }
+        const data = await r.json();
+        voiceSelect.innerHTML = '';
+        langSelect.innerHTML = '';
+        const voiceLabels = data.voice_labels || {};
+        data.available_voices.forEach(v => {
+            voiceSelect.appendChild(Object.assign(document.createElement('option'), {
+                value: v, textContent: voiceLabels[v] || VOICE_DISPLAY_NAMES[v] || v
+            }));
+        });
+        const langLabels = data.language_labels || {};
+        data.available_languages.forEach(l => {
+            langSelect.appendChild(Object.assign(document.createElement('option'), {
+                value: l, textContent: langLabels[l] || LANGUAGE_DISPLAY_NAMES[l] || l
+            }));
+        });
+    } catch (e) {
+        showStatus('Cannot connect to TTS server', 'error');
+        speakBtn.disabled = true;
     }
 }
 
-/**
- * Generates speech from the text input using the local Kokoro TTS server.
- * Plays the audio and handles UI state during generation.
- */
 async function generateSpeech() {
     const text = textInput.value.trim();
-    if (!text) {
-        showStatus('Please enter some text', 'error');
-        return;
-    }
-
+    if (!text) { showStatus('Please enter some text', 'error'); return; }
     if (isGenerating) return;
 
-    // Clean up previous audio resources
     cleanupAudioResources();
     hideAudioControls();
-
     isGenerating = true;
     speakBtn.style.display = 'none';
     stopBtn.style.display = 'block';
@@ -503,84 +193,47 @@ async function generateSpeech() {
     try {
         const response = await fetch('http://localhost:8000/generate', {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                text: text,
-                voice: voiceSelect.value,
-                speed: parseFloat(speedInput.value),
-                language: langSelect.value
+                text, voice: voiceSelect.value,
+                speed: parseFloat(speedInput.value), language: langSelect.value
             })
         });
-
-        if (!response.ok) {
-            throw new Error(`Server error: ${response.status} - ${await response.text()}`);
-        }
+        if (!response.ok) throw new Error(`Server error: ${response.status}`);
 
         const audioBlob = await response.blob();
-        const audioUrl = URL.createObjectURL(audioBlob);
-
-        // Store references for download functionality
         currentAudioBlob = audioBlob;
-        currentAudioUrl = audioUrl;
-
-        // Play audio
-        audioPlayer.src = audioUrl;
+        currentAudioUrl = URL.createObjectURL(audioBlob);
+        audioPlayer.src = currentAudioUrl;
         audioPlayer.style.display = 'block';
         audioPlayer.play();
-
         currentAudio = audioPlayer;
-        showStatus('Speech generated successfully! 🎉', 'success');
+        showStatus('Speech generated! 🎉', 'success');
         showAudioControls();
-
-    } catch (error) {
-        console.error('TTS Error:', error);
-        showStatus('Failed to generate speech: ' + error.message, 'error');
+    } catch (e) {
+        showStatus('Failed: ' + e.message, 'error');
         cleanupAudioResources();
     } finally {
         isGenerating = false;
-        if (!currentAudio || currentAudio.paused) {
-            resetUI();
-        }
+        if (!currentAudio || currentAudio.paused) resetUI();
     }
 }
 
-/**
- * Stops any currently playing speech audio and resets the UI.
- */
 function stopSpeech() {
-    if (currentAudio && !currentAudio.paused) {
-        currentAudio.pause();
-        currentAudio.currentTime = 0;
-    }
+    if (currentAudio && !currentAudio.paused) { currentAudio.pause(); currentAudio.currentTime = 0; }
     resetUI();
     showStatus('Stopped', 'success');
 }
 
-/**
- * Resets the UI state of the speak/stop buttons and generation status.
- */
 function resetUI() {
     speakBtn.style.display = 'block';
     stopBtn.style.display = 'none';
     isGenerating = false;
 }
 
-/**
- * Displays a status message in the popup.
- * @param {string} message - The message to display.
- * @param {string} type - The type of status (e.g., 'success', 'error', 'loading').
- */
 function showStatus(message, type) {
     status.textContent = message;
     status.className = `status ${type}`;
     status.style.display = 'block';
-
-    // Auto-hide success messages after a delay
-    if (type === 'success') {
-        setTimeout(() => {
-            status.style.display = 'none';
-        }, 3000);
-    }
+    if (type === 'success') setTimeout(() => { status.style.display = 'none'; }, 3000);
 }

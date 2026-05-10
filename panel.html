@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html, body {
+            background: transparent;
+            width: 100%; height: 100vh;
+            overflow: hidden; margin: 0; padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Inter', system-ui, sans-serif;
+            color: #ffffff;
+        }
+
+        /* Main panel — fills the iframe */
+        #panel {
+            position: absolute;
+            top: 0; right: 0;
+            width: 100%; height: 100vh;
+            overflow-y: auto; overflow-x: hidden;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+            border-left: 1px solid rgba(100, 255, 218, 0.15);
+            padding: 12px;
+            display: flex; flex-direction: column; gap: 10px;
+            box-shadow: -4px 0 20px rgba(0, 0, 0, 0.5);
+        }
+
+        #closeBtn {
+            position: absolute; top: 8px; right: 8px;
+            background: rgba(255,255,255,0.08);
+            border: 1px solid rgba(255,255,255,0.15);
+            border-radius: 6px; color: #94a3b8;
+            width: 26px; height: 26px;
+            cursor: pointer; font-size: 14px;
+            display: flex; align-items: center; justify-content: center;
+            padding: 0; line-height: 1;
+        }
+        #closeBtn:hover { background: rgba(255,255,255,0.15); color: #fff; }
+
+        /* Scrollbar */
+        #panel::-webkit-scrollbar {
+            width: 3px;
+        }
+        #panel::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        #panel::-webkit-scrollbar-thumb {
+            background: rgba(100, 255, 218, 0.3);
+            border-radius: 2px;
+        }
+        #panel::-webkit-scrollbar-thumb:hover {
+            background: rgba(100, 255, 218, 0.5);
+        }
+
+        /* Header */
+        .header {
+            text-align: center;
+            padding: 10px 0 8px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+            position: relative;
+            flex-shrink: 0;
+        }
+
+        .header::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 1px;
+            background: linear-gradient(90deg, transparent, #64ffda, transparent);
+            opacity: 0.6;
+        }
+
+        .header::after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 50px;
+            height: 2px;
+            background: linear-gradient(90deg, #64ffda, #00bcd4);
+            border-radius: 1px;
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            font-size: 16px;
+            font-weight: 700;
+            margin-bottom: 2px;
+        }
+
+        .logo-icon {
+            font-size: 18px;
+        }
+
+        .logo-text {
+            background: linear-gradient(135deg, #64ffda, #00bcd4);
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+            letter-spacing: -0.5px;
+        }
+
+        .subtitle {
+            font-size: 10px;
+            color: #94a3b8;
+            font-weight: 500;
+        }
+
+        /* Quick actions */
+        .quick-actions {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 5px;
+            flex-shrink: 0;
+        }
+
+        .quick-btn {
+            padding: 7px 4px;
+            font-size: 9px;
+            font-weight: 600;
+            background: rgba(255, 255, 255, 0.05);
+            color: #e2e8f0;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 3px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .quick-btn:hover {
+            background: rgba(100, 255, 218, 0.1);
+            border-color: rgba(100, 255, 218, 0.3);
+            color: #ffffff;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(100, 255, 218, 0.15);
+        }
+
+        /* Form */
+        .form-group {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .form-label {
+            font-size: 11px;
+            font-weight: 600;
+            color: #cbd5e1;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            display: block;
+            margin-bottom: 4px;
+        }
+
+        textarea {
+            width: 100%;
+            height: 80px;
+            min-height: 80px;
+            max-height: 80px;
+            padding: 8px 10px;
+            background: rgba(15, 23, 42, 0.8);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            font-size: 12px;
+            font-family: inherit;
+            color: #ffffff;
+            resize: none;
+            transition: all 0.2s ease;
+            line-height: 1.4;
+            overflow-y: auto;
+        }
+
+        textarea:focus {
+            outline: none;
+            border-color: #64ffda;
+            box-shadow: 0 0 0 2px rgba(100, 255, 218, 0.1);
+            background: rgba(15, 23, 42, 0.95);
+        }
+
+        textarea::placeholder {
+            color: #64748b;
+        }
+
+        textarea::-webkit-scrollbar { width: 4px; }
+        textarea::-webkit-scrollbar-track { background: rgba(255,255,255,0.03); border-radius: 2px; }
+        textarea::-webkit-scrollbar-thumb { background: rgba(100,255,218,0.3); border-radius: 2px; }
+
+        /* Controls row: voice + speed side by side */
+        .controls-row {
+            display: grid;
+            grid-template-columns: 1fr 90px;
+            gap: 8px;
+            align-items: end;
+        }
+
+        .speed-control { position: relative; }
+
+        .speed-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 4px;
+        }
+
+        .speed-value {
+            background: rgba(100, 255, 218, 0.2);
+            color: #64ffda;
+            padding: 1px 5px;
+            border-radius: 4px;
+            font-size: 10px;
+            font-weight: 600;
+            font-family: 'SF Mono', Monaco, monospace;
+        }
+
+        select, input[type="text"] {
+            width: 100%;
+            padding: 6px 8px;
+            background: rgba(255, 255, 255, 0.07);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 6px;
+            color: #fff;
+            font-size: 12px;
+            outline: none;
+            font-family: inherit;
+            transition: border-color 0.2s ease;
+        }
+
+        select {
+            appearance: none;
+            background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='m6 8 4 4 4-4'/%3e%3c/svg%3e");
+            background-repeat: no-repeat;
+            background-position: right 8px center;
+            background-size: 12px;
+            padding-right: 28px;
+            cursor: pointer;
+        }
+
+        select:focus, input[type="text"]:focus {
+            border-color: #64ffda;
+            box-shadow: 0 0 0 2px rgba(100, 255, 218, 0.08);
+        }
+
+        select option {
+            background: #1b2a41;
+            color: #ffffff;
+        }
+
+        input[type="range"] {
+            width: 100%;
+            height: 4px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 2px;
+            border: none;
+            appearance: none;
+            cursor: pointer;
+        }
+
+        input[type="range"]::-webkit-slider-thumb {
+            appearance: none;
+            width: 13px;
+            height: 13px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #64ffda, #00bcd4);
+            cursor: pointer;
+            box-shadow: 0 2px 6px rgba(100, 255, 218, 0.3);
+            transition: transform 0.15s ease;
+        }
+
+        input[type="range"]::-webkit-slider-thumb:hover {
+            transform: scale(1.15);
+        }
+
+        input[type="range"]::-moz-range-thumb {
+            width: 13px;
+            height: 13px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #64ffda, #00bcd4);
+            cursor: pointer;
+            border: none;
+        }
+
+        input[type="checkbox"] {
+            accent-color: #64ffda;
+            width: 13px;
+            height: 13px;
+            cursor: pointer;
+            flex-shrink: 0;
+        }
+
+        /* Buttons */
+        button {
+            padding: 9px 12px;
+            border: none;
+            border-radius: 8px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 5px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            width: 100%;
+            font-family: inherit;
+        }
+
+        .primary-btn {
+            background: linear-gradient(135deg, #64ffda, #00bcd4);
+            color: #0a0a0a;
+            font-weight: 700;
+            border: none;
+            border-radius: 8px;
+            padding: 10px;
+            cursor: pointer;
+            width: 100%;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            box-shadow: 0 3px 12px rgba(100, 255, 218, 0.25);
+        }
+
+        .primary-btn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 5px 16px rgba(100, 255, 218, 0.35);
+        }
+
+        .primary-btn:active { transform: translateY(0); }
+
+        .primary-btn:disabled {
+            background: rgba(255, 255, 255, 0.1);
+            color: #64748b;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .secondary-btn {
+            background: rgba(239, 68, 68, 0.2);
+            color: #fca5a5;
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            border-radius: 8px;
+            padding: 8px;
+            cursor: pointer;
+            width: 100%;
+            font-size: 12px;
+        }
+
+        .secondary-btn:hover {
+            background: rgba(239, 68, 68, 0.3);
+            transform: translateY(-1px);
+        }
+
+        .download-btn {
+            background: rgba(59, 130, 246, 0.2);
+            color: #93c5fd;
+            border: 1px solid rgba(59, 130, 246, 0.3);
+            font-weight: 600;
+        }
+
+        .download-btn:hover {
+            background: rgba(59, 130, 246, 0.3);
+            transform: translateY(-1px);
+        }
+
+        /* Status */
+        .status {
+            display: none;
+            text-align: center;
+            font-size: 11px;
+            padding: 7px 10px;
+            border-radius: 6px;
+            font-weight: 500;
+            border: 1px solid transparent;
+            flex-shrink: 0;
+        }
+
+        .status.success {
+            background: rgba(34, 197, 94, 0.15);
+            color: #86efac;
+            border-color: rgba(34, 197, 94, 0.3);
+        }
+
+        .status.error {
+            background: rgba(239, 68, 68, 0.15);
+            color: #fca5a5;
+            border-color: rgba(239, 68, 68, 0.3);
+        }
+
+        .status.loading {
+            background: rgba(245, 158, 11, 0.15);
+            color: #fcd34d;
+            border-color: rgba(245, 158, 11, 0.3);
+            position: relative;
+        }
+
+        .status.loading::after {
+            content: '';
+            position: absolute;
+            top: 50%;
+            right: 10px;
+            width: 10px;
+            height: 10px;
+            border: 2px solid transparent;
+            border-top: 2px solid #fcd34d;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            transform: translateY(-50%);
+        }
+
+        @keyframes spin {
+            to { transform: translateY(-50%) rotate(360deg); }
+        }
+
+        /* Divider */
+        .divider {
+            height: 1px;
+            background: linear-gradient(90deg, transparent, rgba(100, 255, 218, 0.2), transparent);
+            flex-shrink: 0;
+        }
+
+        /* Read Aloud section */
+        .section-title {
+            font-size: 11px;
+            font-weight: 700;
+            color: #64ffda;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            flex-shrink: 0;
+        }
+
+        .preload-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+        }
+
+        .preload-row .form-label {
+            margin: 0;
+            white-space: nowrap;
+        }
+
+        .preload-slider-wrap {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex: 1;
+            justify-content: flex-end;
+        }
+
+        .preload-slider-wrap input[type="range"] {
+            width: 80px;
+        }
+
+        #preloadAheadValue {
+            color: #64ffda;
+            font-size: 12px;
+            min-width: 20px;
+            text-align: right;
+            font-family: 'SF Mono', Monaco, monospace;
+        }
+
+        .auto-next-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .auto-next-row .form-label {
+            margin: 0;
+            cursor: pointer;
+        }
+
+        /* Progress bar */
+        .ra-track {
+            height: 6px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 4px;
+            position: relative;
+            overflow: hidden;
+            margin-bottom: 4px;
+        }
+
+        .ra-preload {
+            position: absolute;
+            top: 0;
+            left: 0;
+            height: 100%;
+            background: rgba(100, 255, 218, 0.2);
+            border-radius: 4px;
+            transition: width 0.4s ease;
+        }
+
+        .ra-fill {
+            position: absolute;
+            top: 0;
+            left: 0;
+            height: 100%;
+            background: linear-gradient(90deg, #64ffda, #00bcd4);
+            border-radius: 4px;
+            z-index: 1;
+            transition: width 0.4s ease;
+        }
+
+        .ra-label {
+            display: flex;
+            justify-content: space-between;
+            font-size: 11px;
+        }
+
+        #raText { color: rgba(255, 255, 255, 0.75); }
+        #raPreloadLabel { color: rgba(100, 255, 218, 0.65); }
+
+        /* Audio player */
+        .audio-player {
+            width: 100%;
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.05);
+            overflow: hidden;
+            height: 36px;
+            flex-shrink: 0;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="panel">
+
+        <!-- Header -->
+        <div class="header" style="position:relative;">
+            <div class="logo">
+                <span class="logo-icon">🎙️</span>
+                <span class="logo-text">Kokoro TTS</span>
+            </div>
+            <div class="subtitle">Read Aloud</div>
+            <div id="domainLabel" style="font-size:9px; color:rgba(100,255,218,0.6); margin-top:2px; letter-spacing:0.3px;"></div>
+            <button id="closeBtn" title="Close panel">✕</button>
+        </div>
+
+        <!-- Read Aloud section -->
+        <div class="section-title">📖 Read Aloud</div>
+
+        <div class="preload-row">
+            <label class="form-label" for="preloadAheadInput">Preload ahead</label>
+            <div class="preload-slider-wrap">
+                <input type="range" id="preloadAheadInput" min="1" max="20" value="10">
+                <span id="preloadAheadValue">10</span>
+            </div>
+        </div>
+
+        <div class="form-group">
+            <label class="form-label" for="contentSelectorInput">Main content selector</label>
+            <input type="text" id="contentSelectorInput" placeholder="article, main, .post-content">
+        </div>
+
+        <div class="form-group">
+            <label class="form-label" for="ignoreSelectorInput">Ignore selector</label>
+            <input type="text" id="ignoreSelectorInput" placeholder=".ads, nav, footer, .sidebar">
+        </div>
+
+        <div class="auto-next-row">
+            <input type="checkbox" id="autoNextChapter">
+            <label class="form-label" for="autoNextChapter">Auto next chapter when done</label>
+        </div>
+
+        <div class="form-group">
+            <label class="form-label" for="nextChapterSelectorInput">
+                Next chapter selector
+                <span style="color:rgba(255,255,255,0.4); font-size:10px; text-transform:none;">(optional)</span>
+            </label>
+            <input type="text" id="nextChapterSelectorInput" placeholder=".next-chapter, a[rel=next], #nextBtn">
+        </div>
+
+        <button id="saveReadAloudConfig" class="secondary-btn">💾 Save Config</button>
+        <button id="readAloudBtn" class="primary-btn">📖 Read Aloud</button>
+        <button id="pauseReadAloudBtn" class="secondary-btn" style="display:none;">⏸️ Pause</button>
+        <button id="stopReadAloudBtn" class="secondary-btn" style="display:none;">⏹️ Stop Reading</button>
+
+        <!-- Progress bar -->
+        <div id="readAloudProgress" style="display:none;">
+            <div class="ra-track">
+                <div id="raPreload" class="ra-preload" style="width:0%"></div>
+                <div id="raFill" class="ra-fill" style="width:0%"></div>
+            </div>
+            <div class="ra-label">
+                <span id="raText">0 / 0 sentences</span>
+                <span id="raPreloadLabel"></span>
+            </div>
+            <div class="ra-label" style="margin-top:3px;">
+                <span id="raCacheText" style="color:rgba(100,255,218,0.55); font-size:10px;"></span>
+            </div>
+        </div>
+
+    </div><!-- /#panel -->
+
+    <script src="panel.js"></script>
+</body>
+</html>
