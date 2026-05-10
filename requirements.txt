@@ -4,9 +4,20 @@ scipy
 soundfile
 flask
 flask-cors
+
+# Piper backend (default)
+piper-tts
+
+# MMS-TTS backend
 torch
-regex
 transformers
+
+# LightSpeed backend
+# torch
+# regex
+
+# viXTTS backend
+# torch TTS huggingface_hub transformers==4.40.2 edge-tts
 
 # LightSpeed backend (default) — no extra packages, weights auto-downloaded
 # vietTTS backend — pip install git+https://github.com/NTT123/vietTTS.git jax jaxlib

@@ -19,7 +19,7 @@
 
     function initAudioContext() {
         if (!audioContext) {
-            audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+            audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 22050 });
         }
         if (audioContext.state === 'suspended') {
             audioContext.resume().catch(e => console.error("AudioContext resume failed:", e));
@@ -34,7 +34,7 @@
             float32Data[i] = audioData[i] / 32768.0;
         }
 
-        const buffer = audioContext.createBuffer(1, float32Data.length, 16000);
+        const buffer = audioContext.createBuffer(1, float32Data.length, 22050);
         buffer.copyToChannel(float32Data, 0);
 
         const source = audioContext.createBufferSource();

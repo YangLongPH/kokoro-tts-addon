@@ -18,7 +18,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(mess
 
 # ─── Config ───────────────────────────────────────────────────────────────────
 # Options: 'vietTTS' | 'viXTTS' | 'edge_tts'
-ACTIVE_BACKEND = 'mms_tts'
+ACTIVE_BACKEND = 'piper'
 # ──────────────────────────────────────────────────────────────────────────────
 
 
@@ -371,6 +371,51 @@ class LightSpeedBackend(TTSBackend):
         return y_hat[0, 0].data.cpu().numpy().astype(np.float32)
 
 
+class PiperBackend(TTSBackend):
+    """Piper TTS — Vietnamese female voice (VIVOS dataset), offline, ONNX
+    pip install piper-tts
+    Model auto-downloaded from HuggingFace on first run (~60 MB).
+    """
+    name = 'Piper'
+    sample_rate = 22050  # updated from model config after load
+    voices = ['vi_VN-vais1000-medium']
+    voice_labels = {'vi_VN-vais1000-medium': 'Vietnamese Female (Piper VAIS1000)'}
+    languages = ['vi']
+
+    _MODEL_DIR = Path(__file__).parent / 'piper_models'
+    _VOICE = 'vi_VN-vais1000-medium'
+    _HF_BASE = 'https://huggingface.co/rhasspy/piper-voices/resolve/main/vi/vi_VN/vais1000/medium/'
+
+    def load(self):
+        import urllib.request
+        self._MODEL_DIR.mkdir(exist_ok=True)
+
+        for fname in [f'{self._VOICE}.onnx', f'{self._VOICE}.onnx.json']:
+            target = self._MODEL_DIR / fname
+            if not target.exists():
+                app.logger.info(f"Downloading {fname}…")
+                urllib.request.urlretrieve(self._HF_BASE + fname, str(target))
+
+        from piper.voice import PiperVoice
+        self._voice = PiperVoice.load(
+            str(self._MODEL_DIR / f'{self._VOICE}.onnx'),
+            config_path=str(self._MODEL_DIR / f'{self._VOICE}.onnx.json'),
+            use_cuda=False,
+        )
+        self.sample_rate = self._voice.config.sample_rate
+        app.logger.info(f"Piper loaded. sample_rate={self.sample_rate}")
+
+    def synthesize(self, text, voice=None, speed=1.0, language='vi'):
+        from piper.config import SynthesisConfig
+
+        length_scale = 1.0 / speed if speed and speed != 1.0 else 1.0
+        syn_config = SynthesisConfig(length_scale=length_scale)
+        chunks = [chunk.audio_float_array for chunk in self._voice.synthesize(text, syn_config)]
+        if not chunks:
+            return np.zeros(0, dtype=np.float32)
+        return np.concatenate(chunks).astype(np.float32)
+
+
 class MMSTTSBackend(TTSBackend):
     """Meta MMS-TTS Vietnamese — facebook/mms-tts-vie
     pip install transformers torch
@@ -410,6 +455,7 @@ class MMSTTSBackend(TTSBackend):
 # ─── Backend Registry ─────────────────────────────────────────────────────────
 
 BACKENDS = {
+    'piper':      PiperBackend,
     'mms_tts':    MMSTTSBackend,
     'lightspeed': LightSpeedBackend,
     'vietTTS':    VietTTSBackend,
