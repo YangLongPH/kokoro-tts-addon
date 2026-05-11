@@ -29,11 +29,35 @@ const LANGUAGE_DISPLAY_NAMES = {
 };
 
 document.addEventListener('DOMContentLoaded', async () => {
+    await toggleBtnGroupForCurrentTab();
     await populateDropdownsFromServer();
     await loadSettings();
     setupEventListeners();
     checkServerStatus();
 });
+
+async function toggleBtnGroupForCurrentTab() {
+    try {
+        const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
+        if (!tab?.url || !tab?.id) return;
+        let hostname;
+        try { hostname = new URL(tab.url).hostname; } catch { return; }
+        if (!hostname) return;
+
+        const key = `show::${hostname}`;
+        const stored = await browser.storage.local.get({ [key]: false });
+        const visible = !stored[key];
+        await browser.storage.local.set({ [key]: visible });
+
+        try {
+            await browser.tabs.sendMessage(tab.id, { action: 'setBtnGroupVisible', visible });
+        } catch {
+            // Content script not ready yet; state saved and will apply on next load
+        }
+    } catch (e) {
+        console.error('toggleBtnGroupForCurrentTab:', e);
+    }
+}
 
 function setupEventListeners() {
     speedInput.addEventListener('input', (e) => {

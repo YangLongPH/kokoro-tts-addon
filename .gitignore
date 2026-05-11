@@ -9,9 +9,11 @@ build/
 .env
 
 # TTS / ML model cache
+piper_models/
 *.pth
 *.bin
 *.onnx
+*.js.model
 
 # Generated audio files
 *.wav

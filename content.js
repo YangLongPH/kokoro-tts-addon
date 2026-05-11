@@ -184,10 +184,16 @@
         }
     }
 
+    async function maybeInjectPanel() {
+        const key = `show::${location.hostname}`;
+        const stored = await chrome.storage.local.get({ [key]: false });
+        if (stored[key]) injectPanel();
+    }
+
     if (document.body) {
-        injectPanel();
+        maybeInjectPanel();
     } else {
-        document.addEventListener('DOMContentLoaded', injectPanel, { once: true });
+        document.addEventListener('DOMContentLoaded', maybeInjectPanel, { once: true });
     }
 
     let audioContext;
@@ -983,6 +989,24 @@
         } else if (request.action === 'stopReadAloud') {
             cleanupReadAloud();
             sendResponse({success: true});
+            return true;
+        } else if (request.action === 'setBtnGroupVisible') {
+            const btnGroup = document.getElementById('kokoro-btn-group');
+            if (request.visible) {
+                if (!btnGroup) {
+                    injectPanel();
+                } else {
+                    btnGroup.style.display = 'flex';
+                }
+            } else {
+                if (btnGroup) {
+                    btnGroup.style.display = 'none';
+                    // slide panel closed if open
+                    const iframe = document.getElementById('kokoro-panel-iframe');
+                    if (iframe) iframe.style.transform = 'translateX(100%)';
+                }
+            }
+            sendResponse({ success: true });
             return true;
         }
     });
