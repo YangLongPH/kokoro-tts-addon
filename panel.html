@@ -555,6 +555,35 @@
             <button id="closeBtn" title="Close panel">✕</button>
         </div>
 
+        <!-- TTS Settings section -->
+        <div class="section-title">⚙️ TTS Settings</div>
+
+        <div class="form-group">
+            <label class="form-label" for="panelModelSelect">Model</label>
+            <select id="panelModelSelect"></select>
+        </div>
+
+        <div class="controls-row">
+            <div class="form-group">
+                <label class="form-label" for="panelVoiceSelect">Voice</label>
+                <select id="panelVoiceSelect"></select>
+            </div>
+            <div class="form-group">
+                <label class="form-label" for="panelLangSelect">Lang</label>
+                <select id="panelLangSelect"></select>
+            </div>
+        </div>
+
+        <div class="form-group">
+            <div class="speed-header">
+                <label class="form-label" style="margin:0;">Speed</label>
+                <span class="speed-value" id="panelSpeedValue">1.0x</span>
+            </div>
+            <input type="range" id="panelSpeedInput" min="0.5" max="2.0" step="0.1" value="1.0">
+        </div>
+
+        <div class="divider"></div>
+
         <!-- Read Aloud section -->
         <div class="section-title">📖 Read Aloud</div>
 

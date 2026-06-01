@@ -106,11 +106,12 @@ async function speakText(text, tabId) {
 
     try {
         const settings = await browser.storage.local.get({
+            model: 'piper',
             voice: 'vi_default',
             speed: 1.0,
             language: 'vi'
         });
-        
+
         console.log("Background Script: Sending request to TTS server with settings:", settings);
 
         // Notify content script that speech generation is starting (for in-page notification)
@@ -129,6 +130,7 @@ async function speakText(text, tabId) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 text: text.trim(),
+                model: settings.model,
                 voice: settings.voice,
                 speed: settings.speed,
                 language: settings.language

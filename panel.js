@@ -17,7 +17,14 @@ const raCacheText = document.getElementById('raCacheText');
 const domainLabel = document.getElementById('domainLabel');
 const closeBtn = document.getElementById('closeBtn');
 
+const panelModelSelect = document.getElementById('panelModelSelect');
+const panelVoiceSelect = document.getElementById('panelVoiceSelect');
+const panelLangSelect = document.getElementById('panelLangSelect');
+const panelSpeedInput = document.getElementById('panelSpeedInput');
+const panelSpeedValue = document.getElementById('panelSpeedValue');
+
 let currentDomain = null;
+let modelsData = {};
 
 const DOMAIN_KEY = (domain) => `cfg::${domain}`;
 
@@ -77,12 +84,87 @@ window.addEventListener('message', async (e) => {
 
 document.addEventListener('DOMContentLoaded', () => {
     setupEventListeners();
-    // Request domain from content.js (in case onload already fired)
+    populateModelsFromServer();
     sendToContent({ action: 'getPageDomain' });
 });
 
+async function populateModelsFromServer() {
+    try {
+        const r = await fetch('http://localhost:8000/health');
+        if (!r.ok) return;
+        const data = await r.json();
+        modelsData = data.models || {};
+
+        panelModelSelect.innerHTML = '';
+        for (const [key, info] of Object.entries(modelsData)) {
+            panelModelSelect.appendChild(Object.assign(document.createElement('option'), {
+                value: key, textContent: info.label || key
+            }));
+        }
+        if (data.default_model && modelsData[data.default_model]) {
+            panelModelSelect.value = data.default_model;
+        }
+
+        const stored = await chrome.storage.local.get({ model: '', voice: '', speed: 1.0, language: '' });
+        if (stored.model && Array.from(panelModelSelect.options).some(o => o.value === stored.model)) {
+            panelModelSelect.value = stored.model;
+        }
+        updateVoiceLangDropdowns(panelModelSelect.value);
+        if (stored.voice && Array.from(panelVoiceSelect.options).some(o => o.value === stored.voice)) {
+            panelVoiceSelect.value = stored.voice;
+        }
+        if (stored.language && Array.from(panelLangSelect.options).some(o => o.value === stored.language)) {
+            panelLangSelect.value = stored.language;
+        }
+        panelSpeedInput.value = stored.speed;
+        panelSpeedValue.textContent = stored.speed + 'x';
+    } catch (e) {
+        console.error('Failed to load models:', e);
+    }
+}
+
+function updateVoiceLangDropdowns(modelKey) {
+    const info = modelsData[modelKey];
+    if (!info) return;
+
+    panelVoiceSelect.innerHTML = '';
+    info.voices.forEach(v => {
+        panelVoiceSelect.appendChild(Object.assign(document.createElement('option'), {
+            value: v, textContent: (info.voice_labels || {})[v] || v
+        }));
+    });
+
+    panelLangSelect.innerHTML = '';
+    info.languages.forEach(l => {
+        panelLangSelect.appendChild(Object.assign(document.createElement('option'), {
+            value: l, textContent: (info.language_labels || {})[l] || l
+        }));
+    });
+}
+
+async function saveTTSSettings() {
+    await chrome.storage.local.set({
+        model: panelModelSelect.value,
+        voice: panelVoiceSelect.value,
+        speed: parseFloat(panelSpeedInput.value),
+        language: panelLangSelect.value
+    });
+}
+
 function setupEventListeners() {
     closeBtn.addEventListener('click', () => sendToContent({ action: 'closePanel' }));
+
+    panelSpeedInput.addEventListener('input', () => {
+        panelSpeedValue.textContent = parseFloat(panelSpeedInput.value).toFixed(1) + 'x';
+        saveTTSSettings();
+    });
+
+    panelModelSelect.addEventListener('change', () => {
+        updateVoiceLangDropdowns(panelModelSelect.value);
+        saveTTSSettings();
+    });
+
+    [panelVoiceSelect, panelLangSelect].forEach(el => el.addEventListener('change', saveTTSSettings));
 
     preloadAheadInput.addEventListener('input', () => {
         preloadAheadValue.textContent = preloadAheadInput.value;

@@ -715,11 +715,11 @@
     }
 
     async function fetchAudioUrl(text) {
-        const settings = await chrome.storage.local.get({ voice: 'vi_default', speed: 1.0, language: 'vi' });
+        const settings = await chrome.storage.local.get({ model: '', voice: 'vi_default', speed: 1.0, language: 'vi' });
         const response = await fetch('http://localhost:8000/generate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text, voice: settings.voice, speed: settings.speed, language: settings.language })
+            body: JSON.stringify({ text, model: settings.model || undefined, voice: settings.voice, speed: settings.speed, language: settings.language })
         });
         if (!response.ok) throw new Error(`TTS error: ${response.status}`);
         return URL.createObjectURL(await response.blob());

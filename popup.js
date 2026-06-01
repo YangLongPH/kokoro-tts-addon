@@ -5,6 +5,7 @@ let currentAudioUrl = null;
 let isGenerating = false;
 
 const textInput = document.getElementById('textInput');
+const modelSelect = document.getElementById('modelSelect');
 const voiceSelect = document.getElementById('voiceSelect');
 const speedInput = document.getElementById('speedInput');
 const speedValue = document.getElementById('speedValue');
@@ -20,13 +21,7 @@ const getSelectionBtn = document.getElementById('getSelection');
 const getPageBtn = document.getElementById('getPage');
 const clearTextBtn = document.getElementById('clearText');
 
-const VOICE_DISPLAY_NAMES = { 'vi_default': 'Vietnamese (Default)' };
-const LANGUAGE_DISPLAY_NAMES = {
-    'vi': '🇻🇳 Vietnamese', 'en': '🇺🇸 English', 'fr': '🇫🇷 French',
-    'es': '🇪🇸 Spanish',   'de': '🇩🇪 German',  'it': '🇮🇹 Italian',
-    'pt': '🇧🇷 Portuguese', 'zh-cn': '🇨🇳 Chinese', 'ja': '🇯🇵 Japanese',
-    'ko': '🇰🇷 Korean',    'hi': '🇮🇳 Hindi',
-};
+let modelsData = {}; // key → { label, voices, voice_labels, languages, language_labels }
 
 document.addEventListener('DOMContentLoaded', async () => {
     await toggleBtnGroupForCurrentTab();
@@ -108,6 +103,11 @@ function setupEventListeners() {
         hideAudioControls();
     });
 
+    modelSelect.addEventListener('change', () => {
+        updateVoiceLangDropdowns(modelSelect.value);
+        saveSettings();
+    });
+
     [voiceSelect, speedInput, langSelect].forEach(el => el.addEventListener('change', saveSettings));
 
     audioPlayer.addEventListener('ended', resetUI);
@@ -150,17 +150,26 @@ function cleanupAudioResources() {
 
 async function loadSettings() {
     try {
-        const r = await browser.storage.local.get({ voice: 'vi_default', speed: 1.0, language: 'vi' });
-        if (Array.from(voiceSelect.options).some(o => o.value === r.voice)) voiceSelect.value = r.voice;
+        const r = await browser.storage.local.get({ model: '', voice: '', speed: 1.0, language: '' });
+
+        // Model
+        const savedModel = r.model || modelSelect.options[0]?.value || '';
+        if (Array.from(modelSelect.options).some(o => o.value === savedModel)) modelSelect.value = savedModel;
+        updateVoiceLangDropdowns(modelSelect.value);
+
+        // Voice & language (after dropdowns are repopulated for this model)
+        if (r.voice && Array.from(voiceSelect.options).some(o => o.value === r.voice)) voiceSelect.value = r.voice;
+        if (r.language && Array.from(langSelect.options).some(o => o.value === r.language)) langSelect.value = r.language;
+
         speedInput.value = r.speed;
         speedValue.textContent = r.speed + 'x';
-        if (Array.from(langSelect.options).some(o => o.value === r.language)) langSelect.value = r.language;
     } catch (e) { console.error('Failed to load settings:', e); }
 }
 
 async function saveSettings() {
     try {
         await browser.storage.local.set({
+            model: modelSelect.value,
             voice: voiceSelect.value,
             speed: parseFloat(speedInput.value),
             language: langSelect.value
@@ -182,24 +191,41 @@ async function populateDropdownsFromServer() {
         const r = await fetch('http://localhost:8000/health');
         if (!r.ok) { speakBtn.disabled = true; return; }
         const data = await r.json();
-        voiceSelect.innerHTML = '';
-        langSelect.innerHTML = '';
-        const voiceLabels = data.voice_labels || {};
-        data.available_voices.forEach(v => {
-            voiceSelect.appendChild(Object.assign(document.createElement('option'), {
-                value: v, textContent: voiceLabels[v] || VOICE_DISPLAY_NAMES[v] || v
+        modelsData = data.models || {};
+
+        modelSelect.innerHTML = '';
+        for (const [key, info] of Object.entries(modelsData)) {
+            modelSelect.appendChild(Object.assign(document.createElement('option'), {
+                value: key, textContent: info.label || key
             }));
-        });
-        const langLabels = data.language_labels || {};
-        data.available_languages.forEach(l => {
-            langSelect.appendChild(Object.assign(document.createElement('option'), {
-                value: l, textContent: langLabels[l] || LANGUAGE_DISPLAY_NAMES[l] || l
-            }));
-        });
+        }
+        if (data.default_model && modelsData[data.default_model]) {
+            modelSelect.value = data.default_model;
+        }
+        updateVoiceLangDropdowns(modelSelect.value);
     } catch (e) {
         showStatus('Cannot connect to TTS server', 'error');
         speakBtn.disabled = true;
     }
+}
+
+function updateVoiceLangDropdowns(modelKey) {
+    const info = modelsData[modelKey];
+    if (!info) return;
+
+    voiceSelect.innerHTML = '';
+    info.voices.forEach(v => {
+        voiceSelect.appendChild(Object.assign(document.createElement('option'), {
+            value: v, textContent: (info.voice_labels || {})[v] || v
+        }));
+    });
+
+    langSelect.innerHTML = '';
+    info.languages.forEach(l => {
+        langSelect.appendChild(Object.assign(document.createElement('option'), {
+            value: l, textContent: (info.language_labels || {})[l] || l
+        }));
+    });
 }
 
 async function generateSpeech() {
@@ -219,7 +245,7 @@ async function generateSpeech() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                text, voice: voiceSelect.value,
+                text, model: modelSelect.value, voice: voiceSelect.value,
                 speed: parseFloat(speedInput.value), language: langSelect.value
             })
         });

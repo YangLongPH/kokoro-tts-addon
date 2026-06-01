@@ -17,8 +17,7 @@ CORS(app)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 
 # ─── Config ───────────────────────────────────────────────────────────────────
-# Options: 'vietTTS' | 'viXTTS' | 'edge_tts'
-ACTIVE_BACKEND = 'piper'
+DEFAULT_MODEL = 'piper'   # used when no model is specified in the request
 # ──────────────────────────────────────────────────────────────────────────────
 
 
@@ -416,6 +415,80 @@ class PiperBackend(TTSBackend):
         return np.concatenate(chunks).astype(np.float32)
 
 
+class KokoroBackend(TTSBackend):
+    """hexgrad/Kokoro-82M — pip install kokoro torch soundfile
+    Model auto-downloaded from HuggingFace on first run (~330 MB).
+    28 English voices (American + British). Other languages share the same voices
+    but use language-specific phonemisers.
+    """
+    name = 'Kokoro'
+    sample_rate = 22050
+    voices = [
+        'af_heart', 'af_bella', 'af_sarah', 'af_sky', 'af_nicole',
+        'af_alloy', 'af_aoede', 'af_jessica', 'af_kore', 'af_nova', 'af_river',
+        'am_adam', 'am_echo', 'am_eric', 'am_fenrir', 'am_liam',
+        'am_michael', 'am_onyx', 'am_puck', 'am_santa',
+        'bf_alice', 'bf_emma', 'bf_isabella', 'bf_lily',
+        'bm_daniel', 'bm_fable', 'bm_george', 'bm_lewis',
+    ]
+    voice_labels = {
+        'af_heart': '🇺🇸 Heart (F)',    'af_bella': '🇺🇸 Bella (F)',
+        'af_sarah': '🇺🇸 Sarah (F)',    'af_sky': '🇺🇸 Sky (F)',
+        'af_nicole': '🇺🇸 Nicole (F)',  'af_alloy': '🇺🇸 Alloy (F)',
+        'af_aoede': '🇺🇸 Aoede (F)',    'af_jessica': '🇺🇸 Jessica (F)',
+        'af_kore': '🇺🇸 Kore (F)',      'af_nova': '🇺🇸 Nova (F)',
+        'af_river': '🇺🇸 River (F)',
+        'am_adam': '🇺🇸 Adam (M)',      'am_echo': '🇺🇸 Echo (M)',
+        'am_eric': '🇺🇸 Eric (M)',      'am_fenrir': '🇺🇸 Fenrir (M)',
+        'am_liam': '🇺🇸 Liam (M)',      'am_michael': '🇺🇸 Michael (M)',
+        'am_onyx': '🇺🇸 Onyx (M)',      'am_puck': '🇺🇸 Puck (M)',
+        'am_santa': '🇺🇸 Santa (M)',
+        'bf_alice': '🇬🇧 Alice (F)',    'bf_emma': '🇬🇧 Emma (F)',
+        'bf_isabella': '🇬🇧 Isabella (F)', 'bf_lily': '🇬🇧 Lily (F)',
+        'bm_daniel': '🇬🇧 Daniel (M)', 'bm_fable': '🇬🇧 Fable (M)',
+        'bm_george': '🇬🇧 George (M)', 'bm_lewis': '🇬🇧 Lewis (M)',
+    }
+    languages = ['en', 'fr', 'es', 'pt', 'hi', 'it', 'ja', 'zh-cn']
+
+    # Maps our ISO language codes to Kokoro's single-letter lang_code
+    _LANG_CODE = {
+        'en': 'a', 'fr': 'f', 'es': 'e', 'pt': 'p',
+        'hi': 'h', 'it': 'i', 'ja': 'j', 'zh-cn': 'z',
+    }
+
+    def load(self):
+        from kokoro import KPipeline
+        self._KPipeline = KPipeline
+        self._pipelines = {}
+        self._get_pipeline('a')   # pre-load American English
+        app.logger.info("Kokoro-82M loaded (American English pipeline ready).")
+
+    def _get_pipeline(self, lang_code):
+        if lang_code not in self._pipelines:
+            app.logger.info(f"Initializing Kokoro pipeline lang_code={lang_code}…")
+            self._pipelines[lang_code] = self._KPipeline(lang_code=lang_code)
+        return self._pipelines[lang_code]
+
+    def synthesize(self, text, voice='af_heart', speed=1.0, language='en'):
+        import torch
+
+        voice = voice or 'af_heart'
+        # British voices (bf_*, bm_*) need lang_code 'b' regardless of language setting
+        if voice.startswith('bf_') or voice.startswith('bm_'):
+            lang_code = 'b'
+        else:
+            lang_code = self._LANG_CODE.get(language, 'a')
+
+        pipeline = self._get_pipeline(lang_code)
+        segments = []
+        with torch.no_grad():
+            for _, _, audio in pipeline(text, voice=voice, speed=speed, split_pattern=r'\n+'):
+                arr = audio.cpu().numpy() if hasattr(audio, 'cpu') else np.asarray(audio)
+                segments.append(arr.astype(np.float32))
+
+        return np.concatenate(segments) if segments else np.zeros(0, dtype=np.float32)
+
+
 class MMSTTSBackend(TTSBackend):
     """Meta MMS-TTS Vietnamese — facebook/mms-tts-vie
     pip install transformers torch
@@ -455,6 +528,7 @@ class MMSTTSBackend(TTSBackend):
 # ─── Backend Registry ─────────────────────────────────────────────────────────
 
 BACKENDS = {
+    'kokoro':     KokoroBackend,
     'piper':      PiperBackend,
     'mms_tts':    MMSTTSBackend,
     'lightspeed': LightSpeedBackend,
@@ -463,7 +537,16 @@ BACKENDS = {
     'edge_tts':   EdgeTTSBackend,
 }
 
-backend: TTSBackend = BACKENDS[ACTIVE_BACKEND]()
+_loaded: dict = {}   # key → loaded TTSBackend instance
+
+def get_backend(key: str) -> TTSBackend:
+    if key not in BACKENDS:
+        key = DEFAULT_MODEL
+    if key not in _loaded:
+        inst = BACKENDS[key]()
+        inst.load()
+        _loaded[key] = inst
+    return _loaded[key]
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -488,14 +571,17 @@ def split_text(text, max_chars=200):
 
 @app.route('/health', methods=['GET'])
 def health():
-    return jsonify({
-        'status': 'healthy',
-        'model': backend.name,
-        'available_voices': backend.voices,
-        'voice_labels': backend.voice_labels,
-        'available_languages': backend.languages,
-        'language_labels': backend.language_labels(),
-    })
+    models = {}
+    for key, cls in BACKENDS.items():
+        meta = cls()   # instantiate without load() to read static attrs
+        models[key] = {
+            'label': meta.name,
+            'voices': meta.voices,
+            'voice_labels': meta.voice_labels,
+            'languages': meta.languages,
+            'language_labels': meta.language_labels(),
+        }
+    return jsonify({'status': 'healthy', 'default_model': DEFAULT_MODEL, 'models': models})
 
 
 @app.route('/generate', methods=['POST'])
@@ -505,8 +591,14 @@ def generate():
     voice = data.get('voice')
     speed = float(data.get('speed', 1.0))
     language = data.get('language', 'vi')
+    model_key = data.get('model', DEFAULT_MODEL)
     if not text:
         return jsonify({'error': 'No text'}), 400
+
+    try:
+        backend = get_backend(model_key)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
     chunks = split_text(text)
     app.logger.info(f"[{backend.name}] generate {len(chunks)} chunk(s): {text[:60]}")
@@ -537,8 +629,14 @@ def stream():
     voice = data.get('voice')
     speed = float(data.get('speed', 1.0))
     language = data.get('language', 'vi')
+    model_key = data.get('model', DEFAULT_MODEL)
     if not text:
         return jsonify({'error': 'No text'}), 400
+
+    try:
+        backend = get_backend(model_key)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
     chunks = split_text(text)
     MIN_BYTES = int(backend.sample_rate * 0.15 * 2)  # 150 ms PCM16
@@ -561,7 +659,5 @@ def stream():
 
 
 if __name__ == '__main__':
-    app.logger.info(f"Loading backend: {ACTIVE_BACKEND}")
-    backend.load()
-    app.logger.info("Server ready.")
+    app.logger.info(f"Default model: {DEFAULT_MODEL} — backends load on first request.")
     app.run(host='0.0.0.0', port=8000, debug=False, threaded=False)
