@@ -501,11 +501,10 @@
         });
 
         // Fallback: many Vietnamese novel sites use <br> as paragraph separator
-        // instead of <p> tags — walk direct children of the container and wrap
-        // text nodes / inline elements that were not already covered above.
-        const BLOCK = new Set(['P','H1','H2','H3','H4','H5','H6','LI','DIV',
-            'ARTICLE','SECTION','BLOCKQUOTE','TABLE','UL','OL',
-            'HEADER','FOOTER','NAV','ASIDE','SCRIPT','STYLE']);
+        // instead of <p> tags. Walk the tree recursively — when we hit a block
+        // element that was already handled in pass 1 (has data-kokoro-s children)
+        // skip it; otherwise recurse into it so arbitrary nesting depth is covered.
+        const SKIP = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT']);
         let group = [];
 
         function flushGroup() {
@@ -525,7 +524,6 @@
                 sentences.push(sent);
                 html += `<span data-kokoro-s="${idx}">${escapeHtml(sent)} </span>`;
             });
-            // Replace the original nodes with wrapped spans
             const parent = nodes[0].parentNode;
             if (!parent) return;
             const anchor = nodes[0];
@@ -535,22 +533,34 @@
             nodes.forEach(n => n.parentNode && n.parentNode.removeChild(n));
         }
 
-        Array.from(container.childNodes).forEach(child => {
-            if (child.nodeType === Node.ELEMENT_NODE) {
-                if (child.nodeName === 'BR') {
-                    flushGroup();
-                } else if (BLOCK.has(child.nodeName)) {
-                    flushGroup(); // block elements already handled above
-                } else if (child.textContent.trim()) {
-                    // inline element (span, font, em, a, …)
-                    // only collect if it wasn't already wrapped by the pass above
-                    if (!child.querySelector('[data-kokoro-s]')) group.push(child);
+        function walkBrContent(root) {
+            Array.from(root.childNodes).forEach(child => {
+                if (child.nodeType === Node.ELEMENT_NODE) {
+                    if (SKIP.has(child.nodeName)) return;
+                    if (child.nodeName === 'BR') {
+                        flushGroup();
+                    } else if (child.querySelector && child.querySelector('[data-kokoro-s]')) {
+                        // already wrapped by pass 1 — flush current group and skip
+                        flushGroup();
+                    } else if (child.textContent.trim()) {
+                        const isBlock = getComputedStyle(child).display !== 'inline' &&
+                            getComputedStyle(child).display !== 'inline-block' &&
+                            getComputedStyle(child).display !== 'inline-flex';
+                        if (isBlock) {
+                            flushGroup();
+                            walkBrContent(child);
+                        } else {
+                            group.push(child);
+                        }
+                    }
+                } else if (child.nodeType === Node.TEXT_NODE && child.textContent.trim()) {
+                    group.push(child);
                 }
-            } else if (child.nodeType === Node.TEXT_NODE && child.textContent.trim()) {
-                group.push(child);
-            }
-        });
-        flushGroup();
+            });
+            flushGroup();
+        }
+
+        walkBrContent(container);
 
         return sentences;
     }
