@@ -134,15 +134,16 @@
             const nextUrl = findNextChapterLink(customSelector);
             if (nextUrl) {
                 showNotification('Next chapter in 2s…', 'info');
-                await chrome.storage.local.set({ _autoStartReadAloud: true });
+                await chrome.storage.local.set({ [`_autoStart::${location.hostname}`]: true });
                 setTimeout(() => { window.location.href = nextUrl; }, 2000);
                 return;
             }
             const nextBtn = findNextChapterButton(customSelector);
             if (nextBtn) {
                 showNotification('Next chapter in 2s…', 'info');
-                await chrome.storage.local.set({ _autoStartReadAloud: true });
-                setTimeout(() => { nextBtn.click(); }, 2000);
+                await chrome.storage.local.set({ [`_autoStart::${location.hostname}`]: true });
+                const prevUrl = location.href;
+                setTimeout(() => { nextBtn.click(); spaAutoStart(prevUrl); }, 2000);
                 return;
             }
             showNotification('No next chapter found', 'error');
@@ -735,7 +736,19 @@
             currentReadAudio.onended = resolve;
             currentReadAudio.onerror = reject;
             if (!readAloudPaused) {
-                currentReadAudio.play().catch(reject);
+                currentReadAudio.play().catch(err => {
+                    if (err.name === 'NotAllowedError') {
+                        // Browser autoplay policy blocked playback (no prior user gesture).
+                        // Pause the loop and let the user resume via the ▶️ button.
+                        readAloudPaused = true;
+                        if (_updatePlayPauseBtn) _updatePlayPauseBtn();
+                        showNotification('Autoplay blocked — click ▶️ to start reading', 'info');
+                        // Do not reject; the promise resolves normally once the user
+                        // resumes and onended fires.
+                    } else {
+                        reject(err);
+                    }
+                });
             }
         });
     }
@@ -856,6 +869,32 @@
         return null;
     }
 
+    // For SPA sites: after clicking a next-chapter button the URL changes via
+    // pushState but the page never reloads, so checkAutoStart() never fires.
+    // Poll for the URL change here and start reading directly in this context.
+    // If the click causes a real page reload instead, the browser tears down this
+    // context before the interval fires and checkAutoStart() on the new page
+    // handles it via the per-domain _autoStart:: flag.
+    async function spaAutoStart(prevUrl) {
+        const deadline = Date.now() + 10000;
+        const changed = await new Promise(resolve => {
+            const poll = setInterval(() => {
+                if (location.href !== prevUrl || Date.now() > deadline) {
+                    clearInterval(poll);
+                    resolve(location.href !== prevUrl);
+                }
+            }, 200);
+        });
+        if (!changed) return;
+        // SPA navigation confirmed — clear the flag and start reading here
+        await chrome.storage.local.set({ [`_autoStart::${location.hostname}`]: false });
+        await new Promise(r => setTimeout(r, 1500)); // wait for content to render
+        const domainKey = `cfg::${location.hostname}`;
+        const stored = await chrome.storage.local.get({ [domainKey]: null, preloadAhead: 10 });
+        const cfg = stored[domainKey] ?? { preloadAhead: stored.preloadAhead, contentSelector: '', ignoreSelector: '' };
+        startReadAloud(cfg.preloadAhead, cfg.contentSelector, cfg.ignoreSelector);
+    }
+
     async function tryAutoNextChapter() {
         const domainKey = `cfg::${location.hostname}`;
         const stored = await chrome.storage.local.get({ [domainKey]: null });
@@ -865,15 +904,16 @@
         const nextUrl = findNextChapterLink(customSelector);
         if (nextUrl) {
             showNotification('Next chapter in 2s…', 'info');
-            await chrome.storage.local.set({ _autoStartReadAloud: true });
+            await chrome.storage.local.set({ [`_autoStart::${location.hostname}`]: true });
             setTimeout(() => { window.location.href = nextUrl; }, 2000);
             return;
         }
         const nextBtn = findNextChapterButton(customSelector);
         if (nextBtn) {
             showNotification('Next chapter in 2s…', 'info');
-            await chrome.storage.local.set({ _autoStartReadAloud: true });
-            setTimeout(() => { nextBtn.click(); }, 2000);
+            await chrome.storage.local.set({ [`_autoStart::${location.hostname}`]: true });
+            const prevUrl = location.href;
+            setTimeout(() => { nextBtn.click(); spaAutoStart(prevUrl); }, 2000);
             return;
         }
         showNotification('No next chapter found', 'error');
@@ -881,9 +921,10 @@
 
     // Auto-start reading if navigated here from auto-next-chapter
     async function checkAutoStart() {
-        const result = await chrome.storage.local.get({ _autoStartReadAloud: false });
-        if (!result._autoStartReadAloud) return;
-        await chrome.storage.local.set({ _autoStartReadAloud: false });
+        const autoStartKey = `_autoStart::${location.hostname}`;
+        const result = await chrome.storage.local.get({ [autoStartKey]: false });
+        if (!result[autoStartKey]) return;
+        await chrome.storage.local.set({ [autoStartKey]: false });
         // Wait for page to fully render
         await new Promise(r => setTimeout(r, 1500));
         // Load domain-specific config (same key the panel saves into)
