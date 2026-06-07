@@ -80,7 +80,7 @@
         Object.assign(playPauseBtn.style, {
             ...btnBase,
             height: '52px',
-            borderRadius: '0 0 0 8px',
+            borderRadius: '0',
             fontSize: '16px',
         });
 
@@ -116,8 +116,41 @@
             }
         });
 
+        const nextChapterBtn = document.createElement('button');
+        nextChapterBtn.id = 'kokoro-nextchapter-btn';
+        nextChapterBtn.textContent = '⏭️';
+        nextChapterBtn.title = 'Next chapter';
+        Object.assign(nextChapterBtn.style, {
+            ...btnBase,
+            height: '52px',
+            borderRadius: '0 0 0 8px',
+            fontSize: '16px',
+        });
+        nextChapterBtn.addEventListener('click', async () => {
+            const domainKey = `cfg::${location.hostname}`;
+            const stored = await chrome.storage.local.get({ [domainKey]: null });
+            const settings = stored[domainKey] ?? {};
+            const customSelector = settings.nextChapterSelector || '';
+            const nextUrl = findNextChapterLink(customSelector);
+            if (nextUrl) {
+                showNotification('Next chapter in 2s…', 'info');
+                await chrome.storage.local.set({ _autoStartReadAloud: true });
+                setTimeout(() => { window.location.href = nextUrl; }, 2000);
+                return;
+            }
+            const nextBtn = findNextChapterButton(customSelector);
+            if (nextBtn) {
+                showNotification('Next chapter in 2s…', 'info');
+                await chrome.storage.local.set({ _autoStartReadAloud: true });
+                setTimeout(() => { nextBtn.click(); }, 2000);
+                return;
+            }
+            showNotification('No next chapter found', 'error');
+        });
+
         btnGroup.appendChild(toggleBtn);
         btnGroup.appendChild(playPauseBtn);
+        btnGroup.appendChild(nextChapterBtn);
         document.body.appendChild(btnGroup);
         _updatePlayPauseBtn = updatePlayPauseBtn;
 
