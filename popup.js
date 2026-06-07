@@ -24,37 +24,56 @@ const clearTextBtn = document.getElementById('clearText');
 let modelsData = {}; // key → { label, voices, voice_labels, languages, language_labels }
 
 document.addEventListener('DOMContentLoaded', async () => {
-    await toggleBtnGroupForCurrentTab();
+    await loadPanelToggleState();
     await populateDropdownsFromServer();
     await loadSettings();
     setupEventListeners();
     checkServerStatus();
 });
 
-async function toggleBtnGroupForCurrentTab() {
+let _currentTab = null;
+
+async function loadPanelToggleState() {
     try {
         const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
         if (!tab?.url || !tab?.id) return;
         let hostname;
         try { hostname = new URL(tab.url).hostname; } catch { return; }
         if (!hostname) return;
+        _currentTab = tab;
 
         const key = `show::${hostname}`;
         const stored = await browser.storage.local.get({ [key]: false });
-        const visible = !stored[key];
-        await browser.storage.local.set({ [key]: visible });
+        document.getElementById('panelToggle').checked = stored[key];
+    } catch (e) {
+        console.error('loadPanelToggleState:', e);
+    }
+}
 
+async function setPanelVisible(visible) {
+    try {
+        const tab = _currentTab;
+        if (!tab?.url || !tab?.id) return;
+        let hostname;
+        try { hostname = new URL(tab.url).hostname; } catch { return; }
+        if (!hostname) return;
+
+        await browser.storage.local.set({ [`show::${hostname}`]: visible });
         try {
             await browser.tabs.sendMessage(tab.id, { action: 'setBtnGroupVisible', visible });
         } catch {
             // Content script not ready yet; state saved and will apply on next load
         }
     } catch (e) {
-        console.error('toggleBtnGroupForCurrentTab:', e);
+        console.error('setPanelVisible:', e);
     }
 }
 
 function setupEventListeners() {
+    document.getElementById('panelToggle').addEventListener('change', (e) => {
+        setPanelVisible(e.target.checked);
+    });
+
     speedInput.addEventListener('input', (e) => {
         speedValue.textContent = e.target.value + 'x';
     });

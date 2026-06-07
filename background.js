@@ -1,11 +1,6 @@
 // Background script for Kokoro TTS addon
 const browser = chrome;
 
-// Open side panel only for the tab where the icon was clicked
-chrome.action.onClicked.addListener(async (tab) => {
-    await chrome.sidePanel.open({ tabId: tab.id });
-});
-
 // Function to create context menu items
 function createContextMenuItems() {
     chrome.contextMenus.removeAll(() => {

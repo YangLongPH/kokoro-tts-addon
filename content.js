@@ -5,9 +5,6 @@
     'use strict';
     const browser = chrome;
     
-    let isFloatingButtonVisible = false;
-    let floatingButton = null;
-    let lastSelection = '';
     let audioPlayerIframe = null;
     let panelIframe = null;
     let _updatePlayPauseBtn = null; // set by injectPanel once button is created
@@ -320,118 +317,6 @@
         document.addEventListener('DOMContentLoaded', createAudioPlayerIframe, { once: true });
     }
 
-    /**
-     * Creates and returns the floating TTS button element.
-     * Only creates it once.
-     * @returns {HTMLElement} The floating button element.
-     */
-    function createFloatingButton() {
-        if (floatingButton) return floatingButton;
-
-        floatingButton = document.createElement('div');
-        floatingButton.id = 'kokoro-tts-float-btn';
-        floatingButton.innerHTML = '💬';
-        floatingButton.title = 'Speak with Kokoro TTS';
-        
-        Object.assign(floatingButton.style, {
-            position: 'fixed',
-            top: '20px',
-            right: '20px',
-            width: '50px',
-            height: '50px',
-            backgroundColor: '#667eea',
-            color: 'white',
-            border: 'none',
-            borderRadius: '50%',
-            fontSize: '20px',
-            cursor: 'pointer',
-            zIndex: '10000',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
-            transition: 'all 0.3s ease',
-            transform: 'scale(0)',
-            opacity: '0'
-        });
-        
-        floatingButton.addEventListener('mouseenter', () => {
-            floatingButton.style.transform = 'scale(1.1)';
-            floatingButton.style.backgroundColor = '#5a67d8';
-        });
-        
-        floatingButton.addEventListener('mouseleave', () => {
-            floatingButton.style.transform = 'scale(1)';
-            floatingButton.style.backgroundColor = '#667eea';
-        });
-        
-        floatingButton.addEventListener('click', async (event) => {
-            event.stopPropagation();
-            if (lastSelection) {
-                await generateTTS(lastSelection); 
-                hideFloatingButton();
-            } else {
-                showNotification('No text was selected when button appeared', 'error');
-            }
-        });
-        
-        document.body.appendChild(floatingButton);
-        return floatingButton;
-    }
-    
-    function showFloatingButton() {
-        if (!floatingButton) createFloatingButton();
-        
-        floatingButton.style.display = 'flex';
-        setTimeout(() => {
-            floatingButton.style.transform = 'scale(1)';
-            floatingButton.style.opacity = '1';
-        }, 10);
-        
-        isFloatingButtonVisible = true;
-    }
-    
-    function hideFloatingButton() {
-        if (!floatingButton) return;
-        
-        floatingButton.style.transform = 'scale(0)';
-        floatingButton.style.opacity = '0';
-        
-        setTimeout(() => {
-            if (floatingButton) {
-                floatingButton.style.display = 'none';
-            }
-        }, 300);
-        
-        isFloatingButtonVisible = false;
-    }
-    
-    document.addEventListener('mouseup', () => {
-        setTimeout(() => {
-            const currentSelectionText = window.getSelection().toString().trim();
-            if (currentSelectionText && currentSelectionText.length > 0) {
-                if (currentSelectionText !== lastSelection) {
-                    lastSelection = currentSelectionText;
-                    showFloatingButton();
-                }
-            } else {
-                lastSelection = '';
-                if (isFloatingButtonVisible) {
-                    hideFloatingButton();
-                }
-            }
-        }, 100);
-    });
-    
-    document.addEventListener('click', (e) => {
-        if (e.target !== floatingButton && isFloatingButtonVisible) {
-            const currentSelectionCheck = window.getSelection().toString().trim();
-            if (!currentSelectionCheck) {
-                hideFloatingButton();
-            }
-        }
-    });
-    
     async function generateTTS(text) {
         // Stop any existing streaming audio before starting a new one
         stopStreamingAudio(); 
@@ -582,7 +467,10 @@
 
     function splitSentences(text) {
         const raw = text.match(/[^.!?]+[.!?]*[\s]*/g) || [text];
-        return raw.map(s => s.trim()).filter(s => s.length > 2);
+        const sentences = raw.map(s => s.trim()).filter(s => s.length > 2);
+        const result = [];
+        for (const s of sentences) result.push(...chunkLongSentence(s));
+        return result;
     }
 
     function escapeHtml(str) {
@@ -611,6 +499,59 @@
             });
             node.innerHTML = html;
         });
+
+        // Fallback: many Vietnamese novel sites use <br> as paragraph separator
+        // instead of <p> tags — walk direct children of the container and wrap
+        // text nodes / inline elements that were not already covered above.
+        const BLOCK = new Set(['P','H1','H2','H3','H4','H5','H6','LI','DIV',
+            'ARTICLE','SECTION','BLOCKQUOTE','TABLE','UL','OL',
+            'HEADER','FOOTER','NAV','ASIDE','SCRIPT','STYLE']);
+        let group = [];
+
+        function flushGroup() {
+            if (!group.length) return;
+            const nodes = group.slice();
+            group = [];
+            const text = nodes.map(n =>
+                n.nodeType === Node.TEXT_NODE ? n.textContent : (n.innerText || n.textContent)
+            ).join('').trim();
+            if (!text || text.length < 3) return;
+            const parts = splitSentences(text);
+            if (!parts.length) return;
+            let html = '';
+            parts.forEach(sent => {
+                const idx = sentences.length;
+                _sentenceIndexMap[sent.trim()] = idx;
+                sentences.push(sent);
+                html += `<span data-kokoro-s="${idx}">${escapeHtml(sent)} </span>`;
+            });
+            // Replace the original nodes with wrapped spans
+            const parent = nodes[0].parentNode;
+            if (!parent) return;
+            const anchor = nodes[0];
+            const wrapper = document.createElement('span');
+            wrapper.innerHTML = html;
+            while (wrapper.firstChild) parent.insertBefore(wrapper.firstChild, anchor);
+            nodes.forEach(n => n.parentNode && n.parentNode.removeChild(n));
+        }
+
+        Array.from(container.childNodes).forEach(child => {
+            if (child.nodeType === Node.ELEMENT_NODE) {
+                if (child.nodeName === 'BR') {
+                    flushGroup();
+                } else if (BLOCK.has(child.nodeName)) {
+                    flushGroup(); // block elements already handled above
+                } else if (child.textContent.trim()) {
+                    // inline element (span, font, em, a, …)
+                    // only collect if it wasn't already wrapped by the pass above
+                    if (!child.querySelector('[data-kokoro-s]')) group.push(child);
+                }
+            } else if (child.nodeType === Node.TEXT_NODE && child.textContent.trim()) {
+                group.push(child);
+            }
+        });
+        flushGroup();
+
         return sentences;
     }
 
@@ -680,38 +621,45 @@
         userScrollTimer = setTimeout(() => { userScrolling = false; }, 2000);
     }, { passive: true });
 
-    function updateReadingBar(text) {
-        let bar = document.getElementById('kokoro-reading-bar');
-        if (!text) { if (bar) bar.style.display = 'none'; return; }
-        if (!bar) {
-            bar = document.createElement('div');
-            bar.id = 'kokoro-reading-bar';
-            Object.assign(bar.style, {
-                position: 'fixed', bottom: '20px', left: '50%',
-                transform: 'translateX(-50%)', maxWidth: '70%',
-                background: 'rgba(20,20,20,0.88)', color: '#fff',
-                padding: '7px 18px', borderRadius: '20px',
-                fontSize: '13px', lineHeight: '1.4', zIndex: '2147483647',
-                boxShadow: '0 2px 12px rgba(0,0,0,0.5)',
-                pointerEvents: 'none', textAlign: 'center',
-                borderLeft: '3px solid rgba(255,220,50,0.9)'
-            });
-            document.body.appendChild(bar);
-        }
-        bar.textContent = text;
-        bar.style.display = 'block';
-    }
-
     function highlightSentence(index) {
         document.querySelectorAll('[data-kokoro-s].kokoro-reading').forEach(el => el.classList.remove('kokoro-reading'));
         const span = document.querySelector(`[data-kokoro-s="${index}"]`);
         if (span) {
             span.classList.add('kokoro-reading');
-            updateReadingBar(span.textContent.trim());
             if (!userScrolling) {
                 span.scrollIntoView({ behavior: 'smooth', block: 'center' });
             }
         }
+    }
+
+    function cleanTextForTTS(text) {
+        return text
+            .replace(/[·‧・•]/g, '')   // syllable-separator dots used by some novel sites
+            .replace(/[​-‍﻿]/g, '')  // zero-width characters
+            .replace(/~/g, '')
+            .replace(/\.{2,}/g, '.')   // collapse repeated dots (ellipsis) to single dot
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
+    // Split a sentence that is too long for the TTS model at comma boundaries.
+    const MAX_TTS_CHARS = 150;
+    function chunkLongSentence(sentence) {
+        if (sentence.length <= MAX_TTS_CHARS) return [sentence];
+        const chunks = [];
+        const parts = sentence.split(/,\s*/);
+        let current = '';
+        for (const part of parts) {
+            const next = current ? current + ', ' + part : part;
+            if (next.length > MAX_TTS_CHARS && current) {
+                chunks.push(current);
+                current = part;
+            } else {
+                current = next;
+            }
+        }
+        if (current) chunks.push(current);
+        return chunks;
     }
 
     async function fetchAudioUrl(text) {
@@ -719,7 +667,7 @@
         const response = await fetch('http://localhost:8000/generate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text, model: settings.model || undefined, voice: settings.voice, speed: settings.speed, language: settings.language })
+            body: JSON.stringify({ text: cleanTextForTTS(text), model: settings.model || undefined, voice: settings.voice, speed: settings.speed, language: settings.language })
         });
         if (!response.ok) throw new Error(`TTS error: ${response.status}`);
         return URL.createObjectURL(await response.blob());
@@ -865,8 +813,11 @@
         await chrome.storage.local.set({ _autoStartReadAloud: false });
         // Wait for page to fully render
         await new Promise(r => setTimeout(r, 1500));
-        const s = await chrome.storage.local.get({ preloadAhead: 10, contentSelector: '', ignoreSelector: '' });
-        startReadAloud(s.preloadAhead, s.contentSelector, s.ignoreSelector);
+        // Load domain-specific config (same key the panel saves into)
+        const domainKey = `cfg::${location.hostname}`;
+        const stored = await chrome.storage.local.get({ [domainKey]: null, preloadAhead: 10 });
+        const cfg = stored[domainKey] ?? { preloadAhead: stored.preloadAhead, contentSelector: '', ignoreSelector: '' };
+        startReadAloud(cfg.preloadAhead, cfg.contentSelector, cfg.ignoreSelector);
         chrome.runtime.sendMessage({ action: 'readAloudAutoStarted' }).catch(() => {});
         sendToPanel({ action: 'readAloudAutoStarted' });
     }
@@ -887,7 +838,6 @@
             delete preloadCache[k];
         });
         preloadReady.clear();
-        updateReadingBar('');
         document.getElementById('kokoro-highlight-style')?.remove();
         document.querySelectorAll('[data-kokoro-s]').forEach(el => {
             el.replaceWith(document.createTextNode(el.textContent));
