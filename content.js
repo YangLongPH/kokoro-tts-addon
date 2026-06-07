@@ -794,16 +794,46 @@
         return null;
     }
 
+    function findNextChapterButton(customSelector) {
+        const nextRe = /^(next|tiếp|tiếp theo|chương sau|chap sau|next chapter|→|»|›|>>|>)$/i;
+        // 1. User-specified selector pointing to a button
+        if (customSelector) {
+            try {
+                const el = document.querySelector(customSelector);
+                if (el) {
+                    const btn = el.tagName === 'BUTTON' ? el : (el.querySelector('button') || el.closest('button'));
+                    if (btn && !btn.disabled) return btn;
+                }
+            } catch (e) {}
+        }
+        // 2. Any button whose text matches "next" patterns
+        for (const btn of document.querySelectorAll('button')) {
+            if (!btn.disabled && nextRe.test(btn.textContent.trim())) return btn;
+        }
+        return null;
+    }
+
     async function tryAutoNextChapter() {
         const domainKey = `cfg::${location.hostname}`;
         const stored = await chrome.storage.local.get({ [domainKey]: null });
         const settings = stored[domainKey] ?? {};
         if (!settings.autoNextChapter) return;
-        const nextUrl = findNextChapterLink(settings.nextChapterSelector || '');
-        if (!nextUrl) { showNotification('No next chapter found', 'error'); return; }
-        showNotification('Next chapter in 2s…', 'info');
-        await chrome.storage.local.set({ _autoStartReadAloud: true });
-        setTimeout(() => { window.location.href = nextUrl; }, 2000);
+        const customSelector = settings.nextChapterSelector || '';
+        const nextUrl = findNextChapterLink(customSelector);
+        if (nextUrl) {
+            showNotification('Next chapter in 2s…', 'info');
+            await chrome.storage.local.set({ _autoStartReadAloud: true });
+            setTimeout(() => { window.location.href = nextUrl; }, 2000);
+            return;
+        }
+        const nextBtn = findNextChapterButton(customSelector);
+        if (nextBtn) {
+            showNotification('Next chapter in 2s…', 'info');
+            await chrome.storage.local.set({ _autoStartReadAloud: true });
+            setTimeout(() => { nextBtn.click(); }, 2000);
+            return;
+        }
+        showNotification('No next chapter found', 'error');
     }
 
     // Auto-start reading if navigated here from auto-next-chapter
