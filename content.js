@@ -205,6 +205,12 @@
             } else if (action === 'generateTTS') {
                 // Forward to background script for streaming
                 chrome.runtime.sendMessage({ action: 'generateTTS', text: e.data.text }).catch(() => {});
+
+            } else if (action === 'startBatch') {
+                startBatchMode(e.data.contentSelector || '', e.data.ignoreSelector || '', e.data.nextChapterSelector || '');
+
+            } else if (action === 'stopBatch') {
+                stopBatchMode();
             }
         });
     }
@@ -521,6 +527,9 @@
                     if (node.matches(ignoreSelector) || node.closest(ignoreSelector)) return;
                 } catch (e) { console.warn('Invalid ignore selector:', ignoreSelector); }
             }
+            // Nodes with <br> children use <br> as paragraph separators;
+            // let walkBrContent handle them so the <br> elements are preserved.
+            if (node.querySelector('br')) return;
             const text = node.innerText.trim();
             if (!text || text.length < 3) return;
             const parts = splitSentences(text);
@@ -937,9 +946,10 @@
     }
 
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', checkAutoStart);
+        document.addEventListener('DOMContentLoaded', () => { checkAutoStart(); checkBatchMode(); });
     } else {
         checkAutoStart();
+        checkBatchMode();
     }
 
     function cleanupReadAloud(notify = true) {
@@ -995,6 +1005,155 @@
     document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape' && readAloudActive) { cleanupReadAloud(); e.preventDefault(); }
     });
+
+    // ─── Batch Convert Mode ────────────────────────────────────────────────────
+    // Sends full chapter text to server for offline MP3 export, then auto-advances.
+
+    let batchActive = false;
+    let batchPollInterval = null;
+
+    function extractFullChapterText(contentSelector, ignoreSelector) {
+        const container = extractMainContent(contentSelector);
+        const clone = container.cloneNode(true);
+        clone.querySelectorAll('script, style, noscript').forEach(el => el.remove());
+        if (ignoreSelector) {
+            try { clone.querySelectorAll(ignoreSelector).forEach(el => el.remove()); } catch (e) {}
+        }
+        return (clone.innerText || clone.textContent || '').replace(/\s+/g, ' ').trim();
+    }
+
+    function chapterFilename() {
+        return location.href
+            .replace(/^https?:\/\//, '')
+            .replace(/[^a-zA-Z0-9]+/g, '_')
+            .replace(/^_+|_+$/g, '')
+            .slice(0, 80) || ('chapter_' + Date.now());
+    }
+
+    async function startBatchMode(contentSelector, ignoreSelector, nextChapterSelector) {
+        if (batchActive) return;
+        batchActive = true;
+
+        try {
+            const text = extractFullChapterText(contentSelector, ignoreSelector);
+            if (!text || text.length < 10) {
+                showNotification('Batch: no text found on this page', 'error');
+                batchActive = false;
+                sendToPanel({ action: 'batchStopped' });
+                return;
+            }
+
+            showNotification(`Batch: submitting ${text.length} chars…`, 'loading');
+            sendToPanel({ action: 'batchProgress', progress: 0, total: text.length });
+
+            const tts = await chrome.storage.local.get({ model: '', voice: 'vi_default', speed: 1.0, language: 'vi' });
+            const body = {
+                text,
+                filename: chapterFilename(),
+                voice: tts.voice,
+                speed: tts.speed,
+                language: tts.language,
+            };
+            if (tts.model) body.model = tts.model;
+
+            const submitResp = await fetch('http://localhost:8000/batch_submit', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+            if (!submitResp.ok) throw new Error(`Submit failed: ${submitResp.status}`);
+            const { job_id: jobId } = await submitResp.json();
+
+            // Poll for completion
+            batchPollInterval = setInterval(async () => {
+                if (!batchActive) { clearInterval(batchPollInterval); return; }
+                try {
+                    const r = await fetch(`http://localhost:8000/batch_status/${jobId}`);
+                    if (!r.ok) return;
+                    const job = await r.json();
+
+                    sendToPanel({ action: 'batchProgress', progress: job.progress || 0 });
+                    showNotification(`Batch: ${job.progress || 0}% processed…`, 'loading');
+
+                    if (job.status === 'done') {
+                        clearInterval(batchPollInterval);
+                        showNotification('Batch: chapter saved! Going to next…', 'success');
+                        sendToPanel({ action: 'batchDone', file: job.file });
+                        await new Promise(r => setTimeout(r, 2000));
+                        if (!batchActive) return;
+                        await advanceBatchChapter(contentSelector, ignoreSelector, nextChapterSelector);
+
+                    } else if (job.status === 'error') {
+                        clearInterval(batchPollInterval);
+                        showNotification(`Batch error: ${job.error}`, 'error');
+                        batchActive = false;
+                        sendToPanel({ action: 'batchError', error: job.error });
+                    }
+                } catch (e) {
+                    console.error('Batch poll error:', e);
+                }
+            }, 5000);
+
+        } catch (e) {
+            showNotification(`Batch failed: ${e.message}`, 'error');
+            batchActive = false;
+            sendToPanel({ action: 'batchError', error: e.message });
+        }
+    }
+
+    async function advanceBatchChapter(contentSelector, ignoreSelector, nextChapterSelector) {
+        const nextUrl = findNextChapterLink(nextChapterSelector);
+        if (nextUrl) {
+            await chrome.storage.local.set({
+                [`_batchMode::${location.hostname}`]: { contentSelector, ignoreSelector, nextChapterSelector }
+            });
+            window.location.href = nextUrl;
+            return;
+        }
+        const nextBtn = findNextChapterButton(nextChapterSelector);
+        if (nextBtn) {
+            await chrome.storage.local.set({
+                [`_batchMode::${location.hostname}`]: { contentSelector, ignoreSelector, nextChapterSelector }
+            });
+            const prevUrl = location.href;
+            nextBtn.click();
+            // SPA: poll for URL change then restart batch
+            const deadline = Date.now() + 10000;
+            const poll = setInterval(async () => {
+                if (location.href !== prevUrl || Date.now() > deadline) {
+                    clearInterval(poll);
+                    if (location.href !== prevUrl) {
+                        await chrome.storage.local.remove([`_batchMode::${location.hostname}`]);
+                        await new Promise(r => setTimeout(r, 1500));
+                        batchActive = false;
+                        startBatchMode(contentSelector, ignoreSelector, nextChapterSelector);
+                    }
+                }
+            }, 300);
+            return;
+        }
+        showNotification('Batch: no next chapter found, done.', 'info');
+        batchActive = false;
+        sendToPanel({ action: 'batchStopped' });
+    }
+
+    function stopBatchMode() {
+        batchActive = false;
+        if (batchPollInterval) { clearInterval(batchPollInterval); batchPollInterval = null; }
+        chrome.storage.local.remove([`_batchMode::${location.hostname}`]);
+        showNotification('Batch mode stopped', 'info');
+        sendToPanel({ action: 'batchStopped' });
+    }
+
+    async function checkBatchMode() {
+        const key = `_batchMode::${location.hostname}`;
+        const result = await chrome.storage.local.get({ [key]: null });
+        if (!result[key]) return;
+        const cfg = result[key];
+        await chrome.storage.local.remove([key]);
+        await new Promise(r => setTimeout(r, 1500));
+        startBatchMode(cfg.contentSelector || '', cfg.ignoreSelector || '', cfg.nextChapterSelector || '');
+    }
 
     // ───────────────────────────────────────────────────────────────────────────
 

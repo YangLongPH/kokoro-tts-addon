@@ -638,6 +638,32 @@
             </div>
         </div>
 
+        <div class="divider"></div>
+
+        <!-- Batch Convert section -->
+        <div class="section-title">📥 Batch Convert</div>
+        <p style="font-size:10px; color:#94a3b8; line-height:1.5; margin:0;">
+            Saves each chapter as MP3 to server's <code style="color:#64ffda; font-size:9px;">output/</code> folder,
+            then auto-advances to the next chapter. Uses the selectors above.
+        </p>
+
+        <div id="batchStatus" class="status" style="display:none;"></div>
+
+        <div id="batchProgressWrap" style="display:none;">
+            <div class="ra-track">
+                <div id="batchFill" class="ra-fill" style="width:0%; background:linear-gradient(90deg,#a78bfa,#7c3aed);"></div>
+            </div>
+            <div class="ra-label" style="margin-top:3px;">
+                <span id="batchProgressText" style="color:rgba(255,255,255,0.75); font-size:11px;">Processing…</span>
+            </div>
+        </div>
+
+        <button id="startBatchBtn" class="primary-btn"
+            style="background:linear-gradient(135deg,#a78bfa,#7c3aed); box-shadow:0 3px 12px rgba(167,139,250,0.25);">
+            📥 Start Batch Mode
+        </button>
+        <button id="stopBatchBtn" class="secondary-btn" style="display:none;">⏹️ Stop Batch</button>
+
     </div><!-- /#panel -->
 
     <script src="panel.js"></script>

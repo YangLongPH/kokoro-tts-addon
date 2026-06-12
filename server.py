@@ -5,6 +5,8 @@ Switch models by changing ACTIVE_BACKEND below.
 """
 import io
 import re
+import uuid
+import threading
 import logging
 import numpy as np
 import soundfile as sf
@@ -539,6 +541,13 @@ BACKENDS = {
 
 _loaded: dict = {}   # key → loaded TTSBackend instance
 
+OUTPUT_DIR = Path(__file__).parent / 'output'
+
+# Batch job store: job_id → {status, file, error, progress}
+_jobs: dict = {}
+_jobs_lock = threading.Lock()
+_batch_sem = threading.Semaphore(1)  # one batch job at a time (TTS backends are not thread-safe)
+
 def get_backend(key: str) -> TTSBackend:
     if key not in BACKENDS:
         key = DEFAULT_MODEL
@@ -658,6 +667,93 @@ def stream():
     return Response(gen(), mimetype='application/octet-stream')
 
 
+@app.route('/batch_submit', methods=['POST'])
+def batch_submit():
+    data = request.get_json() or {}
+    text = data.get('text', '').strip()
+    filename = data.get('filename', 'chapter')
+    model_key = data.get('model', DEFAULT_MODEL)
+    voice = data.get('voice')
+    speed = float(data.get('speed', 1.0))
+    language = data.get('language', 'vi')
+
+    if not text:
+        return jsonify({'error': 'No text'}), 400
+
+    OUTPUT_DIR.mkdir(exist_ok=True)
+
+    job_id = uuid.uuid4().hex[:8]
+    with _jobs_lock:
+        _jobs[job_id] = {'status': 'queued', 'file': None, 'error': None, 'progress': 0}
+
+    def run_job():
+        if not _batch_sem.acquire(blocking=False):
+            with _jobs_lock:
+                _jobs[job_id]['status'] = 'queued'
+            _batch_sem.acquire()  # wait for current job to finish
+
+        try:
+            with _jobs_lock:
+                _jobs[job_id]['status'] = 'processing'
+
+            backend = get_backend(model_key)
+            chunks = split_text(text, max_chars=200)
+            total = len(chunks)
+
+            silence = np.zeros(int(backend.sample_rate * 0.25), dtype=np.float32)
+            parts = []
+            for i, chunk in enumerate(chunks):
+                parts.append(backend.synthesize(chunk, voice=voice, speed=speed, language=language))
+                parts.append(silence)
+                with _jobs_lock:
+                    _jobs[job_id]['progress'] = int((i + 1) / total * 100)
+                app.logger.info(f"Batch {job_id}: chunk {i + 1}/{total}")
+
+            if not parts:
+                raise RuntimeError("No audio generated")
+
+            wav = np.concatenate(parts)
+            safe_name = re.sub(r'[^a-zA-Z0-9_\-]', '_', filename)[:80]
+            wav_path = OUTPUT_DIR / f'{safe_name}.wav'
+            sf.write(str(wav_path), wav, backend.sample_rate, format='wav', subtype='PCM_16')
+
+            out_file = str(wav_path)
+            try:
+                from pydub import AudioSegment
+                mp3_path = OUTPUT_DIR / f'{safe_name}.mp3'
+                AudioSegment.from_wav(str(wav_path)).export(str(mp3_path), format='mp3', bitrate='128k')
+                wav_path.unlink()
+                out_file = str(mp3_path)
+            except Exception as e:
+                app.logger.warning(f"MP3 conversion skipped (install pydub+ffmpeg for mp3): {e}")
+
+            with _jobs_lock:
+                _jobs[job_id]['status'] = 'done'
+                _jobs[job_id]['file'] = out_file
+                _jobs[job_id]['progress'] = 100
+            app.logger.info(f"Batch {job_id} done → {out_file}")
+
+        except Exception as e:
+            with _jobs_lock:
+                _jobs[job_id]['status'] = 'error'
+                _jobs[job_id]['error'] = str(e)
+            app.logger.error(f"Batch {job_id} failed: {e}")
+        finally:
+            _batch_sem.release()
+
+    threading.Thread(target=run_job, daemon=True).start()
+    return jsonify({'job_id': job_id})
+
+
+@app.route('/batch_status/<job_id>', methods=['GET'])
+def batch_status_route(job_id):
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+    if not job:
+        return jsonify({'error': 'Job not found'}), 404
+    return jsonify({**job, 'job_id': job_id})
+
+
 if __name__ == '__main__':
     app.logger.info(f"Default model: {DEFAULT_MODEL} — backends load on first request.")
-    app.run(host='0.0.0.0', port=8000, debug=False, threaded=False)
+    app.run(host='0.0.0.0', port=8000, debug=False, threaded=True)

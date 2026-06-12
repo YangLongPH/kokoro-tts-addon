@@ -1,3 +1,10 @@
+const startBatchBtn = document.getElementById('startBatchBtn');
+const stopBatchBtn = document.getElementById('stopBatchBtn');
+const batchStatus = document.getElementById('batchStatus');
+const batchProgressWrap = document.getElementById('batchProgressWrap');
+const batchFill = document.getElementById('batchFill');
+const batchProgressText = document.getElementById('batchProgressText');
+
 const readAloudBtn = document.getElementById('readAloudBtn');
 const pauseReadAloudBtn = document.getElementById('pauseReadAloudBtn');
 const stopReadAloudBtn = document.getElementById('stopReadAloudBtn');
@@ -79,6 +86,29 @@ window.addEventListener('message', async (e) => {
         pauseReadAloudBtn.textContent = '⏸️ Pause';
         stopReadAloudBtn.style.display = 'block';
         readAloudProgress.style.display = 'block';
+
+    } else if (action === 'batchProgress') {
+        const pct = e.data.progress || 0;
+        batchProgressWrap.style.display = 'block';
+        batchFill.style.width = pct + '%';
+        batchProgressText.textContent = `Converting: ${pct}%`;
+        showBatchStatus(`Processing chapter… ${pct}%`, 'loading');
+
+    } else if (action === 'batchDone') {
+        batchFill.style.width = '100%';
+        batchProgressText.textContent = 'Saved! Going to next chapter…';
+        showBatchStatus('Chapter saved! Navigating to next…', 'success');
+
+    } else if (action === 'batchStopped') {
+        startBatchBtn.style.display = 'block';
+        stopBatchBtn.style.display = 'none';
+        batchProgressWrap.style.display = 'none';
+        showBatchStatus('Batch stopped', 'info');
+
+    } else if (action === 'batchError') {
+        startBatchBtn.style.display = 'block';
+        stopBatchBtn.style.display = 'none';
+        showBatchStatus(`Error: ${e.data.error}`, 'error');
     }
 });
 
@@ -216,6 +246,35 @@ function setupEventListeners() {
         pauseReadAloudBtn.textContent = '⏸️ Pause';
         stopReadAloudBtn.style.display = 'none';
     });
+
+    startBatchBtn.addEventListener('click', () => {
+        sendToContent({
+            action: 'startBatch',
+            contentSelector: contentSelectorInput.value.trim(),
+            ignoreSelector: ignoreSelectorInput.value.trim(),
+            nextChapterSelector: nextChapterSelectorInput.value.trim(),
+        });
+        startBatchBtn.style.display = 'none';
+        stopBatchBtn.style.display = 'block';
+        batchProgressWrap.style.display = 'block';
+        batchFill.style.width = '0%';
+        batchProgressText.textContent = 'Submitting…';
+        showBatchStatus('Starting batch mode…', 'loading');
+    });
+
+    stopBatchBtn.addEventListener('click', () => {
+        sendToContent({ action: 'stopBatch' });
+        startBatchBtn.style.display = 'block';
+        stopBatchBtn.style.display = 'none';
+        batchProgressWrap.style.display = 'none';
+        batchStatus.style.display = 'none';
+    });
+}
+
+function showBatchStatus(msg, type) {
+    batchStatus.className = `status ${type}`;
+    batchStatus.style.display = 'block';
+    batchStatus.textContent = msg;
 }
 
 async function loadSettings(domain) {
