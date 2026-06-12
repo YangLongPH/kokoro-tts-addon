@@ -671,7 +671,8 @@ def stream():
 def batch_submit():
     data = request.get_json() or {}
     text = data.get('text', '').strip()
-    filename = data.get('filename', 'chapter')
+    novel_name = data.get('novel_name', '').strip()
+    chapter = data.get('chapter', '').strip()
     model_key = data.get('model', DEFAULT_MODEL)
     voice = data.get('voice')
     speed = float(data.get('speed', 1.0))
@@ -681,6 +682,17 @@ def batch_submit():
         return jsonify({'error': 'No text'}), 400
 
     OUTPUT_DIR.mkdir(exist_ok=True)
+
+    # Resolve output directory: output/<novel_name>/ or output/
+    safe_novel = re.sub(r'[^a-zA-Z0-9_\-]', '_', novel_name).strip('_')[:60] if novel_name else ''
+    out_dir = (OUTPUT_DIR / safe_novel) if safe_novel else OUTPUT_DIR
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Resolve filename: chapter_0042 or fallback timestamp
+    if chapter and chapter.isdigit():
+        safe_name = f'chapter_{int(chapter):04d}'
+    else:
+        safe_name = f'chapter_{uuid.uuid4().hex[:6]}'
 
     job_id = uuid.uuid4().hex[:8]
     with _jobs_lock:
@@ -713,14 +725,13 @@ def batch_submit():
                 raise RuntimeError("No audio generated")
 
             wav = np.concatenate(parts)
-            safe_name = re.sub(r'[^a-zA-Z0-9_\-]', '_', filename)[:80]
-            wav_path = OUTPUT_DIR / f'{safe_name}.wav'
+            wav_path = out_dir / f'{safe_name}.wav'
             sf.write(str(wav_path), wav, backend.sample_rate, format='wav', subtype='PCM_16')
 
             out_file = str(wav_path)
             try:
                 from pydub import AudioSegment
-                mp3_path = OUTPUT_DIR / f'{safe_name}.mp3'
+                mp3_path = out_dir / f'{safe_name}.mp3'
                 AudioSegment.from_wav(str(wav_path)).export(str(mp3_path), format='mp3', bitrate='128k')
                 wav_path.unlink()
                 out_file = str(mp3_path)

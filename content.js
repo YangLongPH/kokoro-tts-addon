@@ -31,7 +31,7 @@
 
         // Send domain to panel once iframe is ready
         panelIframe.addEventListener('load', () => {
-            sendToPanel({ action: 'pageInfo', domain: location.hostname });
+            sendToPanel({ action: 'pageInfo', domain: location.hostname, batchRunning: batchActive });
         });
 
         // Button group — lives in the page, always reliable
@@ -161,7 +161,7 @@
             const { action } = e.data;
 
             if (action === 'getPageDomain') {
-                sendToPanel({ action: 'pageInfo', domain: location.hostname });
+                sendToPanel({ action: 'pageInfo', domain: location.hostname, batchRunning: batchActive });
 
             } else if (action === 'closePanel') {
                 panelOpen = false;
@@ -1011,6 +1011,7 @@
 
     let batchActive = false;
     let batchPollInterval = null;
+    let _batchNavTimer = null;
 
     function extractFullChapterText(contentSelector, ignoreSelector) {
         const container = extractMainContent(contentSelector);
@@ -1022,17 +1023,31 @@
         return (clone.innerText || clone.textContent || '').replace(/\s+/g, ' ').trim();
     }
 
-    function chapterFilename() {
-        return location.href
-            .replace(/^https?:\/\//, '')
-            .replace(/[^a-zA-Z0-9]+/g, '_')
-            .replace(/^_+|_+$/g, '')
-            .slice(0, 80) || ('chapter_' + Date.now());
+    function extractNovelAndChapter() {
+        const parts = location.pathname.split('/').filter(Boolean);
+        const chapterRe = /^(?:chuong|chapter|chap|ch)[_\-]?0*(\d+)/i;
+        let novelSlug = '';
+        let chNum = null;
+        for (let i = 0; i < parts.length; i++) {
+            const m = parts[i].match(chapterRe);
+            if (m) { chNum = m[1]; if (i > 0) novelSlug = parts[i - 1]; break; }
+        }
+        if (!chNum) {
+            const m = location.pathname.match(/[\/\-_](?:chuong|chapter|chap|ch)[\/\-_]?0*(\d+)/i);
+            if (m) chNum = m[1];
+        }
+        if (!novelSlug) {
+            novelSlug = parts.find(p => p.length > 3 && !/^\d+$/.test(p) && !chapterRe.test(p)) || parts[0] || '';
+        }
+        novelSlug = novelSlug.replace(/[-]+/g, '_').replace(/[^a-zA-Z0-9_]/g, '').replace(/^_+|_+$/g, '').slice(0, 60)
+            || location.hostname.replace(/[^a-zA-Z0-9]/g, '_').slice(0, 30);
+        return { novelSlug, chNum };
     }
 
     async function startBatchMode(contentSelector, ignoreSelector, nextChapterSelector) {
         if (batchActive) return;
         batchActive = true;
+        sendToPanel({ action: 'batchAutoStarted' });
 
         try {
             const text = extractFullChapterText(contentSelector, ignoreSelector);
@@ -1047,9 +1062,11 @@
             sendToPanel({ action: 'batchProgress', progress: 0, total: text.length });
 
             const tts = await chrome.storage.local.get({ model: '', voice: 'vi_default', speed: 1.0, language: 'vi' });
+            const { novelSlug, chNum } = extractNovelAndChapter();
             const body = {
                 text,
-                filename: chapterFilename(),
+                novel_name: novelSlug,
+                chapter: chNum,
                 voice: tts.voice,
                 speed: tts.speed,
                 language: tts.language,
@@ -1077,11 +1094,13 @@
 
                     if (job.status === 'done') {
                         clearInterval(batchPollInterval);
-                        showNotification('Batch: chapter saved! Going to next…', 'success');
+                        showNotification('Batch: chapter saved! Click Stop or wait 3s for next…', 'success');
                         sendToPanel({ action: 'batchDone', file: job.file });
-                        await new Promise(r => setTimeout(r, 2000));
-                        if (!batchActive) return;
-                        await advanceBatchChapter(contentSelector, ignoreSelector, nextChapterSelector);
+                        _batchNavTimer = setTimeout(async () => {
+                            _batchNavTimer = null;
+                            if (!batchActive) return;
+                            await advanceBatchChapter(contentSelector, ignoreSelector, nextChapterSelector);
+                        }, 3000);
 
                     } else if (job.status === 'error') {
                         clearInterval(batchPollInterval);
@@ -1139,6 +1158,7 @@
 
     function stopBatchMode() {
         batchActive = false;
+        if (_batchNavTimer) { clearTimeout(_batchNavTimer); _batchNavTimer = null; }
         if (batchPollInterval) { clearInterval(batchPollInterval); batchPollInterval = null; }
         chrome.storage.local.remove([`_batchMode::${location.hostname}`]);
         showNotification('Batch mode stopped', 'info');
@@ -1153,6 +1173,8 @@
         await chrome.storage.local.remove([key]);
         await new Promise(r => setTimeout(r, 1500));
         startBatchMode(cfg.contentSelector || '', cfg.ignoreSelector || '', cfg.nextChapterSelector || '');
+        // Panel may already be open and missed the batchAutoStarted from startBatchMode
+        setTimeout(() => { if (batchActive) sendToPanel({ action: 'batchAutoStarted' }); }, 200);
     }
 
     // ───────────────────────────────────────────────────────────────────────────

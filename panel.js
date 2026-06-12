@@ -55,6 +55,12 @@ window.addEventListener('message', async (e) => {
         currentDomain = e.data.domain;
         domainLabel.textContent = currentDomain;
         await loadSettings(currentDomain);
+        if (e.data.batchRunning) {
+            startBatchBtn.style.display = 'none';
+            stopBatchBtn.style.display = 'block';
+            batchProgressWrap.style.display = 'block';
+            showBatchStatus('Batch running…', 'loading');
+        }
 
     } else if (action === 'readAloudProgress') {
         const { current, total, preloaded, totalCached } = e.data;
@@ -80,6 +86,14 @@ window.addEventListener('message', async (e) => {
             stopReadAloudBtn.style.display = 'none';
         }, 2000);
 
+    } else if (action === 'batchAutoStarted') {
+        startBatchBtn.style.display = 'none';
+        stopBatchBtn.style.display = 'block';
+        batchProgressWrap.style.display = 'block';
+        batchFill.style.width = '0%';
+        batchProgressText.textContent = 'Starting…';
+        showBatchStatus('Batch running…', 'loading');
+
     } else if (action === 'readAloudAutoStarted') {
         readAloudBtn.style.display = 'none';
         pauseReadAloudBtn.style.display = 'block';
@@ -96,8 +110,8 @@ window.addEventListener('message', async (e) => {
 
     } else if (action === 'batchDone') {
         batchFill.style.width = '100%';
-        batchProgressText.textContent = 'Saved! Going to next chapter…';
-        showBatchStatus('Chapter saved! Navigating to next…', 'success');
+        batchProgressText.textContent = 'Saved! Next chapter in 3s… (Stop to cancel)';
+        showBatchStatus('Chapter saved! Navigating in 3s…', 'success');
 
     } else if (action === 'batchStopped') {
         startBatchBtn.style.display = 'block';
