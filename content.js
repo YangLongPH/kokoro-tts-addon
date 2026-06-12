@@ -464,6 +464,7 @@
 
     let readAloudActive = false;
     let readAloudPaused = false;
+
     let readAloudSentences = [];
     let readAloudIndex = 0;
     const preloadCache = {};   // index → Promise<objectURL>
@@ -955,6 +956,7 @@
     function cleanupReadAloud(notify = true) {
         readAloudActive = false;
         readAloudPaused = false;
+
         if (_domObserver) { _domObserver.disconnect(); _domObserver = null; }
         if (currentReadAudio) { currentReadAudio.pause(); currentReadAudio = null; }
         Object.entries(preloadCache).forEach(([k, p]) => {
@@ -1015,12 +1017,61 @@
 
     function extractFullChapterText(contentSelector, ignoreSelector) {
         const container = extractMainContent(contentSelector);
-        const clone = container.cloneNode(true);
-        clone.querySelectorAll('script, style, noscript').forEach(el => el.remove());
-        if (ignoreSelector) {
-            try { clone.querySelectorAll(ignoreSelector).forEach(el => el.remove()); } catch (e) {}
+        const parts = [];
+        const MARK = 'data-kokoro-batch';
+
+        // Pass 1: same node set as wrapContentSentences
+        container.querySelectorAll('p, h1, h2, h3, h4, li').forEach(node => {
+            if (ignoreSelector) {
+                try {
+                    if (node.matches(ignoreSelector) || node.closest(ignoreSelector)) return;
+                } catch (e) {}
+            }
+            if (node.querySelector('br')) return; // handled in pass 2
+            const text = node.innerText.trim();
+            if (text && text.length >= 3) {
+                parts.push(text);
+                node.setAttribute(MARK, '1');
+            }
+        });
+
+        // Pass 2: br-separated content (mirrors walkBrContent)
+        const SKIP = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT']);
+        let group = [];
+
+        function flushGroup() {
+            if (!group.length) return;
+            const text = group.map(n =>
+                n.nodeType === Node.TEXT_NODE ? n.textContent : (n.innerText || n.textContent)
+            ).join('').trim();
+            group = [];
+            if (text && text.length >= 3) parts.push(text);
         }
-        return (clone.innerText || clone.textContent || '').replace(/\s+/g, ' ').trim();
+
+        function walkBr(root) {
+            Array.from(root.childNodes).forEach(child => {
+                if (child.nodeType === Node.ELEMENT_NODE) {
+                    if (SKIP.has(child.nodeName)) return;
+                    if (child.nodeName === 'BR') {
+                        flushGroup();
+                    } else if (child.querySelector && child.querySelector(`[${MARK}]`)) {
+                        flushGroup(); // subtree already handled in pass 1
+                    } else if (child.textContent.trim()) {
+                        const s = getComputedStyle(child);
+                        const isBlock = s.display !== 'inline' && s.display !== 'inline-block' && s.display !== 'inline-flex';
+                        if (isBlock) { flushGroup(); walkBr(child); }
+                        else group.push(child);
+                    }
+                } else if (child.nodeType === Node.TEXT_NODE && child.textContent.trim()) {
+                    group.push(child);
+                }
+            });
+            flushGroup();
+        }
+
+        walkBr(container);
+        container.querySelectorAll(`[${MARK}]`).forEach(el => el.removeAttribute(MARK));
+        return parts.join('\n');
     }
 
     function extractNovelAndChapter() {
@@ -1094,13 +1145,35 @@
 
                     if (job.status === 'done') {
                         clearInterval(batchPollInterval);
-                        showNotification('Batch: chapter saved! Click Stop or wait 3s for next…', 'success');
                         sendToPanel({ action: 'batchDone', file: job.file });
+                        const delaySec = Math.floor(Math.random() * 8) + 8;
+                        let remaining = delaySec;
+                        const countdownEl = document.getElementById('kokoro-tts-notification') || document.createElement('div');
+                        countdownEl.id = 'kokoro-tts-notification';
+                        countdownEl.textContent = `Batch: chapter saved! Next in ${remaining}s…`;
+                        Object.assign(countdownEl.style, {
+                            position: 'fixed', top: '20px', left: '50%', transform: 'translateX(-50%)',
+                            backgroundColor: '#4CAF50', color: 'white', padding: '12px 20px',
+                            borderRadius: '6px', fontSize: '14px', fontWeight: '500',
+                            zIndex: '10001', boxShadow: '0 4px 12px rgba(0,0,0,0.3)', opacity: '1'
+                        });
+                        if (!countdownEl.parentNode) document.body.appendChild(countdownEl);
+                        const countdownInterval = setInterval(() => {
+                            remaining--;
+                            if (remaining > 0) {
+                                countdownEl.textContent = `Batch: chapter saved! Next in ${remaining}s…`;
+                            } else {
+                                clearInterval(countdownInterval);
+                                countdownEl.remove();
+                            }
+                        }, 1000);
                         _batchNavTimer = setTimeout(async () => {
                             _batchNavTimer = null;
+                            clearInterval(countdownInterval);
+                            countdownEl.remove();
                             if (!batchActive) return;
                             await advanceBatchChapter(contentSelector, ignoreSelector, nextChapterSelector);
-                        }, 3000);
+                        }, delaySec * 1000);
 
                     } else if (job.status === 'error') {
                         clearInterval(batchPollInterval);

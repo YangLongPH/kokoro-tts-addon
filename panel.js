@@ -13,6 +13,7 @@ const preloadAheadValue = document.getElementById('preloadAheadValue');
 const contentSelectorInput = document.getElementById('contentSelectorInput');
 const ignoreSelectorInput = document.getElementById('ignoreSelectorInput');
 const saveReadAloudConfig = document.getElementById('saveReadAloudConfig');
+
 const autoNextChapter = document.getElementById('autoNextChapter');
 const nextChapterSelectorInput = document.getElementById('nextChapterSelectorInput');
 const readAloudProgress = document.getElementById('readAloudProgress');
@@ -240,7 +241,8 @@ function setupEventListeners() {
             action: 'startReadAloud',
             preloadAhead: parseInt(preloadAheadInput.value),
             contentSelector: contentSelectorInput.value.trim(),
-            ignoreSelector: ignoreSelectorInput.value.trim()
+            ignoreSelector: ignoreSelectorInput.value.trim(),
+
         });
         readAloudBtn.style.display = 'none';
         pauseReadAloudBtn.style.display = 'block';

@@ -8,6 +8,7 @@ import re
 import uuid
 import threading
 import logging
+import subprocess
 import numpy as np
 import soundfile as sf
 from pathlib import Path
@@ -559,21 +560,36 @@ def get_backend(key: str) -> TTSBackend:
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
-def split_text(text, max_chars=200):
+def clean_text_for_tts(text):
+    text = re.sub(r'[·‧・•]', '', text)
+    text = re.sub(r'[​-‍﻿]', '', text)
+    text = text.replace('~', '')
+    text = re.sub(r'\.{2,}', '.', text)
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
+
+
+def split_text(text, max_chars=150):
     sentences = re.split(r'(?<=[.!?])\s+|\n+', text.strip())
-    chunks, current = [], ''
+    chunks = []
     for sent in sentences:
         sent = sent.strip()
         if not sent:
             continue
-        if len(current) + len(sent) + 1 <= max_chars:
-            current = (current + ' ' + sent).strip()
+        if len(sent) <= max_chars:
+            chunks.append(sent)
         else:
+            parts = re.split(r',\s*', sent)
+            current = ''
+            for part in parts:
+                joined = (current + ', ' + part) if current else part
+                if len(joined) > max_chars and current:
+                    chunks.append(current)
+                    current = part
+                else:
+                    current = joined
             if current:
                 chunks.append(current)
-            current = sent[:max_chars]
-    if current:
-        chunks.append(current)
     return chunks or [text]
 
 # ─── Routes ───────────────────────────────────────────────────────────────────
@@ -709,13 +725,14 @@ def batch_submit():
                 _jobs[job_id]['status'] = 'processing'
 
             backend = get_backend(model_key)
-            chunks = split_text(text, max_chars=200)
+            chunks = split_text(text)
             total = len(chunks)
 
-            silence = np.zeros(int(backend.sample_rate * 0.25), dtype=np.float32)
+            silence = np.zeros(backend.sample_rate // 2, dtype=np.float32)
             parts = []
             for i, chunk in enumerate(chunks):
-                parts.append(backend.synthesize(chunk, voice=voice, speed=speed, language=language))
+                audio = backend.synthesize(clean_text_for_tts(chunk), voice=voice, speed=speed, language=language)
+                parts.append(audio)
                 parts.append(silence)
                 with _jobs_lock:
                     _jobs[job_id]['progress'] = int((i + 1) / total * 100)
@@ -730,13 +747,15 @@ def batch_submit():
 
             out_file = str(wav_path)
             try:
-                from pydub import AudioSegment
                 mp3_path = out_dir / f'{safe_name}.mp3'
-                AudioSegment.from_wav(str(wav_path)).export(str(mp3_path), format='mp3', bitrate='128k')
+                subprocess.run(
+                    ['ffmpeg', '-y', '-i', str(wav_path), '-b:a', '128k', str(mp3_path)],
+                    check=True, capture_output=True
+                )
                 wav_path.unlink()
                 out_file = str(mp3_path)
             except Exception as e:
-                app.logger.warning(f"MP3 conversion skipped (install pydub+ffmpeg for mp3): {e}")
+                app.logger.warning(f"MP3 conversion skipped (install ffmpeg for mp3): {e}")
 
             with _jobs_lock:
                 _jobs[job_id]['status'] = 'done'
