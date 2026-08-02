@@ -687,8 +687,8 @@ def stream():
 def batch_submit():
     data = request.get_json() or {}
     text = data.get('text', '').strip()
-    novel_name = data.get('novel_name', '').strip()
-    chapter = data.get('chapter', '').strip()
+    novel_name = (data.get('novel_name') or '').strip()
+    chapter = (data.get('chapter') or '').strip()
     model_key = data.get('model', DEFAULT_MODEL)
     voice = data.get('voice')
     speed = float(data.get('speed', 1.0))
