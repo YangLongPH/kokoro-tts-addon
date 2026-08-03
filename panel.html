@@ -228,7 +228,7 @@
             font-family: 'SF Mono', Monaco, monospace;
         }
 
-        select, input[type="text"] {
+        select, input[type="text"], input[type="number"] {
             width: 100%;
             padding: 6px 8px;
             background: rgba(255, 255, 255, 0.07);
@@ -251,7 +251,7 @@
             cursor: pointer;
         }
 
-        select:focus, input[type="text"]:focus {
+        select:focus, input[type="text"]:focus, input[type="number"]:focus {
             border-color: #64ffda;
             box-shadow: 0 0 0 2px rgba(100, 255, 218, 0.08);
         }
@@ -529,6 +529,13 @@
         #raText { color: rgba(255, 255, 255, 0.75); }
         #raPreloadLabel { color: rgba(100, 255, 218, 0.65); }
 
+        #autoStopCountdown {
+            color: #64ffda;
+            font-family: 'SF Mono', Monaco, monospace;
+            font-weight: 600;
+        }
+        #autoStopClock { color: rgba(255, 255, 255, 0.5); }
+
         /* Audio player */
         .audio-player {
             width: 100%;
@@ -558,12 +565,23 @@
         <!-- TTS Settings section -->
         <div class="section-title">⚙️ TTS Settings</div>
 
-        <div class="form-group">
+        <div class="form-group" id="ttsModelGroup" style="display:none;">
+            <label class="form-label" for="ttsModelSelect">Cloud TTS Model</label>
+            <select id="ttsModelSelect">
+                <option value="piper_vi">Piper VN (1 giọng, ổn định, đọc sai tên tiếng Anh)</option>
+                <option value="piper_vi_translit">Piper VN phiên âm (1 giọng, tự phiên âm từ tiếng Anh)</option>
+                <option value="piper_vi_en">Piper VN+EN (2 giọng, đọc đúng tiếng Anh, đổi giọng đột ngột)</option>
+                <option value="google_tts">Google Cloud TTS (trả phí, chất lượng cao hơn)</option>
+                <option value="vieneu">VieNeu-TTS (mã nguồn mở, 1 giọng, tự nhiên xử lý VN+EN)</option>
+            </select>
+        </div>
+
+        <div class="form-group" id="localModelGroup">
             <label class="form-label" for="panelModelSelect">Model</label>
             <select id="panelModelSelect"></select>
         </div>
 
-        <div class="controls-row">
+        <div class="controls-row" id="localVoiceLangRow">
             <div class="form-group">
                 <label class="form-label" for="panelVoiceSelect">Voice</label>
                 <select id="panelVoiceSelect"></select>
@@ -603,6 +621,21 @@
         <div class="form-group">
             <label class="form-label" for="ignoreSelectorInput">Ignore selector</label>
             <input type="text" id="ignoreSelectorInput" placeholder=".ads, nav, footer, .sidebar">
+        </div>
+
+        <div class="preload-row">
+            <label class="form-label" for="autoStopMinutesInput">Auto-stop after</label>
+            <div class="preload-slider-wrap">
+                <input type="number" id="autoStopMinutesInput" min="0" max="600" step="5" value="30" style="width:56px; text-align:right; flex:none;">
+                <span style="color:rgba(255,255,255,0.5); font-size:11px; white-space:nowrap;">min (0 = never)</span>
+            </div>
+        </div>
+        <div style="color:rgba(255,255,255,0.4); font-size:10px; margin-top:-6px;">
+            Stops reading without advancing to the next chapter — unlike finishing normally.
+        </div>
+        <div id="autoStopStatusRow" class="ra-label" style="display:none;">
+            <span id="autoStopCountdown"></span>
+            <span id="autoStopClock"></span>
         </div>
 
         <div class="auto-next-row">

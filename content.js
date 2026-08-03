@@ -102,8 +102,8 @@
                     [domainKey]: null,
                     preloadAhead: 10
                 });
-                const cfg = stored[domainKey] ?? { preloadAhead: stored.preloadAhead, contentSelector: '', ignoreSelector: '' };
-                startReadAloud(cfg.preloadAhead, cfg.contentSelector, cfg.ignoreSelector);
+                const cfg = stored[domainKey] ?? { preloadAhead: stored.preloadAhead, contentSelector: '', ignoreSelector: '', autoStopMinutes: 30 };
+                startReadAloud(cfg.preloadAhead, cfg.contentSelector, cfg.ignoreSelector, cfg.autoStopMinutes);
                 updatePlayPauseBtn();
             } else if (!readAloudPaused) {
                 readAloudPaused = true;
@@ -170,7 +170,7 @@
                 toggleBtn.textContent = '🎙️';
 
             } else if (action === 'startReadAloud') {
-                startReadAloud(e.data.preloadAhead, e.data.contentSelector, e.data.ignoreSelector);
+                startReadAloud(e.data.preloadAhead, e.data.contentSelector, e.data.ignoreSelector, e.data.autoStopMinutes);
 
             } else if (action === 'pauseReadAloud') {
                 readAloudPaused = true;
@@ -183,6 +183,7 @@
                 if (_updatePlayPauseBtn) _updatePlayPauseBtn();
 
             } else if (action === 'stopReadAloud') {
+                clearAutoStopState();
                 cleanupReadAloud();
 
             } else if (action === 'getSelection') {
@@ -471,6 +472,7 @@
     const preloadReady = new Set(); // indices whose audio has finished downloading
     let PRELOAD_AHEAD = 10;
     let currentReadAudio = null;
+    let autoStopTimer = null; // wall-clock "sleep timer" for Read Aloud — cleared in cleanupReadAloud()
     let userScrolling = false;
     let userScrollTimer = null;
     let _sentenceIndexMap = {};  // sentence text → index (for DOM rewrap)
@@ -717,12 +719,20 @@
     }
 
     async function fetchAudioUrl(text) {
-        const settings = await chrome.storage.local.get({ model: '', voice: 'vi_default', speed: 1.0, language: 'vi' });
-        const response = await fetch('http://localhost:8000/generate', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text: cleanTextForTTS(text), model: settings.model || undefined, voice: settings.voice, speed: settings.speed, language: settings.language })
-        });
+        const settings = await chrome.storage.local.get({ model: '', voice: 'vi_default', speed: 1.0, language: 'vi', ttsApiUrl: '', ttsApiSecret: '', ttsModel: 'piper_vi' });
+        const cleaned = cleanTextForTTS(text);
+
+        const response = (settings.ttsApiUrl && settings.ttsApiSecret)
+            ? await fetch(`${settings.ttsApiUrl}/tts/generate`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'x-tts-secret': settings.ttsApiSecret },
+                body: JSON.stringify({ text: cleaned, speed: settings.speed, model: settings.ttsModel })
+            })
+            : await fetch('http://localhost:8000/generate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text: cleaned, model: settings.model || undefined, voice: settings.voice, speed: settings.speed, language: settings.language })
+            });
         if (!response.ok) throw new Error(`TTS error: ${response.status}`);
         return URL.createObjectURL(await response.blob());
     }
@@ -820,7 +830,8 @@
             showNotification('Reading complete!', 'success');
             chrome.runtime.sendMessage({ action: 'readAloudDone' }).catch(() => {});
             sendToPanel({ action: 'readAloudDone' });
-            await tryAutoNextChapter();
+            const continuing = await tryAutoNextChapter();
+            if (!continuing) clearAutoStopState();
         }
         cleanupReadAloud(false);
     }
@@ -901,22 +912,25 @@
         await new Promise(r => setTimeout(r, 1500)); // wait for content to render
         const domainKey = `cfg::${location.hostname}`;
         const stored = await chrome.storage.local.get({ [domainKey]: null, preloadAhead: 10 });
-        const cfg = stored[domainKey] ?? { preloadAhead: stored.preloadAhead, contentSelector: '', ignoreSelector: '' };
-        startReadAloud(cfg.preloadAhead, cfg.contentSelector, cfg.ignoreSelector);
+        const cfg = stored[domainKey] ?? { preloadAhead: stored.preloadAhead, contentSelector: '', ignoreSelector: '', autoStopMinutes: 30 };
+        startReadAloud(cfg.preloadAhead, cfg.contentSelector, cfg.ignoreSelector, cfg.autoStopMinutes, true);
     }
 
+    // Returns true if a chapter jump was scheduled (the reading session is
+    // continuing onto a new page) — callers use this to decide whether the
+    // persisted auto-stop countdown should survive or be cleared.
     async function tryAutoNextChapter() {
         const domainKey = `cfg::${location.hostname}`;
         const stored = await chrome.storage.local.get({ [domainKey]: null });
         const settings = stored[domainKey] ?? {};
-        if (!settings.autoNextChapter) return;
+        if (!settings.autoNextChapter) return false;
         const customSelector = settings.nextChapterSelector || '';
         const nextUrl = findNextChapterLink(customSelector);
         if (nextUrl) {
             showNotification('Next chapter in 2s…', 'info');
             await chrome.storage.local.set({ [`_autoStart::${location.hostname}`]: true });
             setTimeout(() => { window.location.href = nextUrl; }, 2000);
-            return;
+            return true;
         }
         const nextBtn = findNextChapterButton(customSelector);
         if (nextBtn) {
@@ -924,9 +938,10 @@
             await chrome.storage.local.set({ [`_autoStart::${location.hostname}`]: true });
             const prevUrl = location.href;
             setTimeout(() => { nextBtn.click(); spaAutoStart(prevUrl); }, 2000);
-            return;
+            return true;
         }
         showNotification('No next chapter found', 'error');
+        return false;
     }
 
     // Auto-start reading if navigated here from auto-next-chapter
@@ -940,8 +955,8 @@
         // Load domain-specific config (same key the panel saves into)
         const domainKey = `cfg::${location.hostname}`;
         const stored = await chrome.storage.local.get({ [domainKey]: null, preloadAhead: 10 });
-        const cfg = stored[domainKey] ?? { preloadAhead: stored.preloadAhead, contentSelector: '', ignoreSelector: '' };
-        startReadAloud(cfg.preloadAhead, cfg.contentSelector, cfg.ignoreSelector);
+        const cfg = stored[domainKey] ?? { preloadAhead: stored.preloadAhead, contentSelector: '', ignoreSelector: '', autoStopMinutes: 30 };
+        startReadAloud(cfg.preloadAhead, cfg.contentSelector, cfg.ignoreSelector, cfg.autoStopMinutes, true);
         chrome.runtime.sendMessage({ action: 'readAloudAutoStarted' }).catch(() => {});
         sendToPanel({ action: 'readAloudAutoStarted' });
     }
@@ -957,6 +972,7 @@
         readAloudActive = false;
         readAloudPaused = false;
 
+        if (autoStopTimer) { clearTimeout(autoStopTimer); autoStopTimer = null; }
         if (_domObserver) { _domObserver.disconnect(); _domObserver = null; }
         if (currentReadAudio) { currentReadAudio.pause(); currentReadAudio = null; }
         Object.entries(preloadCache).forEach(([k, p]) => {
@@ -972,8 +988,43 @@
         if (_updatePlayPauseBtn) _updatePlayPauseBtn();
     }
 
-    async function startReadAloud(preloadAhead, contentSelector, ignoreSelector) {
-        if (readAloudActive) { cleanupReadAloud(); return; }
+    // Clears the persisted auto-stop countdown target for this site. Only
+    // call this when the listening session is truly ending (manual stop,
+    // the timer itself firing, or finishing with no next chapter to jump
+    // to) — NOT on every cleanupReadAloud(), since a successful chapter
+    // jump also runs through cleanupReadAloud() and must let the countdown
+    // survive into the next page load.
+    function clearAutoStopState() {
+        if (autoStopTimer) { clearTimeout(autoStopTimer); autoStopTimer = null; }
+        chrome.storage.local.remove(`_autoStopAt::${location.hostname}`).catch(() => {});
+    }
+
+    // Stops reading (without advancing to the next chapter, unlike finishing
+    // normally) once `minutes` of wall-clock time have passed since the
+    // session started — runs regardless of pause state, same as an
+    // audiobook sleep timer.
+    function autoStopReadAloud(minutes) {
+        showNotification(`Auto-stopped after ${minutes}m`, 'info');
+        chrome.runtime.sendMessage({ action: 'readAloudDone' }).catch(() => {});
+        sendToPanel({ action: 'readAloudDone' });
+        clearAutoStopState();
+        cleanupReadAloud(false);
+    }
+
+    // `continueCountdown` distinguishes the two ways startReadAloud() can be
+    // called without an explicit stop having happened first:
+    //  - true  (checkAutoStart/spaAutoStart only): resuming into a NEW page
+    //    because auto-next-chapter just jumped here — inherit the running
+    //    countdown so a marathon session actually adds up across chapters.
+    //  - false/omitted (every manual trigger — button clicks, panel
+    //    messages): always start a brand-new N-minute countdown, even if a
+    //    stale unexpired target happens to still be sitting in storage from
+    //    before (e.g. the user just reloaded the page and pressed Play
+    //    again — that's a fresh listening session from the user's
+    //    perspective, not a continuation, even though nothing explicitly
+    //    cleared storage on the reload).
+    async function startReadAloud(preloadAhead, contentSelector, ignoreSelector, autoStopMinutes, continueCountdown = false) {
+        if (readAloudActive) { clearAutoStopState(); cleanupReadAloud(); return; }
         if (preloadAhead) PRELOAD_AHEAD = preloadAhead;
 
         const container = extractMainContent(contentSelector);
@@ -987,6 +1038,34 @@
         if (_updatePlayPauseBtn) _updatePlayPauseBtn();
         injectHighlightStyle();
         startDOMObserver(container);
+
+        if (autoStopTimer) { clearTimeout(autoStopTimer); autoStopTimer = null; }
+        const stopMinutes = Number(autoStopMinutes);
+        if (stopMinutes > 0) {
+            // Countdown target is persisted (not just an in-memory setTimeout)
+            // so it survives auto-advancing to the next chapter — each chapter
+            // is a fresh page load / fresh content-script instance, so a
+            // purely in-memory timer would silently reset to the full N
+            // minutes every time, never actually firing across a multi-hour
+            // multi-chapter reading marathon.
+            const stopKey = `_autoStopAt::${location.hostname}`;
+            const now = Date.now();
+            let autoStopAt = null;
+            if (continueCountdown) {
+                const stored = await chrome.storage.local.get({ [stopKey]: 0 });
+                if (stored[stopKey] && stored[stopKey] > now) autoStopAt = stored[stopKey];
+            }
+            if (!autoStopAt) {
+                autoStopAt = now + stopMinutes * 60 * 1000;
+            }
+            await chrome.storage.local.set({ [stopKey]: autoStopAt });
+            const remainingMs = autoStopAt - now;
+            if (remainingMs <= 0) {
+                autoStopReadAloud(stopMinutes);
+                return;
+            }
+            autoStopTimer = setTimeout(() => autoStopReadAloud(stopMinutes), remainingMs);
+        }
 
         const initialCount = Math.min(PRELOAD_AHEAD, readAloudSentences.length);
         for (let i = 0; i < initialCount; i++) preloadSentence(i);
@@ -1005,7 +1084,7 @@
 
     // Stop Read Aloud with Escape key
     document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape' && readAloudActive) { cleanupReadAloud(); e.preventDefault(); }
+        if (e.key === 'Escape' && readAloudActive) { clearAutoStopState(); cleanupReadAloud(); e.preventDefault(); }
     });
 
     // ─── Batch Convert Mode ────────────────────────────────────────────────────
@@ -1254,9 +1333,12 @@
 
     // Listener for messages from the background script to play audio OR show status
     browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
-        if (request.action === 'playTTSAudio' && request.audioUrl) {
+        if (request.action === 'playTTSAudio' && (request.audioUrl || request.audioData)) {
             console.log("Content Script: Received 'playTTSAudio' message from background script (non-streaming).");
-            playAudioInPage(request.audioUrl);
+            // background.js is a service worker (no DOM / URL.createObjectURL), so
+            // it sends the raw bytes here and we build the blob URL in-page.
+            const audioUrl = request.audioUrl || URL.createObjectURL(new Blob([request.audioData], { type: 'audio/wav' }));
+            playAudioInPage(audioUrl);
             // Update the in-page notification when audio data is received and playback is initiated
             showNotification('Speech generated and now playing! 🎉', 'success');
             sendResponse({success: true}); // Acknowledge receipt
@@ -1291,7 +1373,7 @@
             sendResponse({success: true});
             return true;
         } else if (request.action === 'startReadAloud') {
-            startReadAloud(request.preloadAhead, request.contentSelector, request.ignoreSelector);
+            startReadAloud(request.preloadAhead, request.contentSelector, request.ignoreSelector, request.autoStopMinutes);
             sendResponse({success: true});
             return true;
         } else if (request.action === 'pauseReadAloud') {
@@ -1305,6 +1387,7 @@
             sendResponse({success: true});
             return true;
         } else if (request.action === 'stopReadAloud') {
+            clearAutoStopState();
             cleanupReadAloud();
             sendResponse({success: true});
             return true;

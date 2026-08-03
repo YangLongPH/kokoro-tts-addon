@@ -16,6 +16,10 @@ const saveReadAloudConfig = document.getElementById('saveReadAloudConfig');
 
 const autoNextChapter = document.getElementById('autoNextChapter');
 const nextChapterSelectorInput = document.getElementById('nextChapterSelectorInput');
+const autoStopMinutesInput = document.getElementById('autoStopMinutesInput');
+const autoStopStatusRow = document.getElementById('autoStopStatusRow');
+const autoStopCountdownEl = document.getElementById('autoStopCountdown');
+const autoStopClockEl = document.getElementById('autoStopClock');
 const readAloudProgress = document.getElementById('readAloudProgress');
 const raFill = document.getElementById('raFill');
 const raPreload = document.getElementById('raPreload');
@@ -30,22 +34,62 @@ const panelVoiceSelect = document.getElementById('panelVoiceSelect');
 const panelLangSelect = document.getElementById('panelLangSelect');
 const panelSpeedInput = document.getElementById('panelSpeedInput');
 const panelSpeedValue = document.getElementById('panelSpeedValue');
+const ttsModelGroup = document.getElementById('ttsModelGroup');
+const ttsModelSelectInput = document.getElementById('ttsModelSelect');
+const localModelGroup = document.getElementById('localModelGroup');
+const localVoiceLangRow = document.getElementById('localVoiceLangRow');
 
 let currentDomain = null;
 let modelsData = {};
 
 const DOMAIN_KEY = (domain) => `cfg::${domain}`;
+// Same key content.js writes the auto-stop countdown target (absolute
+// epoch ms) to — this is the single source of truth for the live display
+// below, independent of any message-passing timing.
+const AUTO_STOP_KEY = (domain) => `_autoStopAt::${domain}`;
 
 const DEFAULTS = {
     preloadAhead: 10,
     contentSelector: '',
     ignoreSelector: '',
     autoNextChapter: false,
-    nextChapterSelector: ''
+    nextChapterSelector: '',
+    autoStopMinutes: 30
 };
 
 function sendToContent(data) {
     window.parent.postMessage({ ...data, source: 'kokoro-panel' }, '*');
+}
+
+function formatDuration(ms) {
+    const totalSec = Math.max(0, Math.round(ms / 1000));
+    const h = Math.floor(totalSec / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    const s = totalSec % 60;
+    const mm = String(m).padStart(2, '0');
+    const ss = String(s).padStart(2, '0');
+    return h > 0 ? `${h}:${mm}:${ss}` : `${m}:${ss}`;
+}
+
+// Reads the auto-stop target timestamp straight from storage (the same key
+// content.js writes/clears) and renders it — no reliance on postMessage
+// timing, so this stays correct even if the panel is opened/reopened mid-
+// countdown or reloaded independently of the content script's lifecycle.
+async function refreshAutoStopDisplay() {
+    if (!currentDomain) { autoStopStatusRow.style.display = 'none'; return; }
+    const key = AUTO_STOP_KEY(currentDomain);
+    const stored = await chrome.storage.local.get({ [key]: 0 });
+    const autoStopAt = stored[key];
+    const remainingMs = autoStopAt - Date.now();
+
+    if (!autoStopAt || remainingMs <= 0) {
+        autoStopStatusRow.style.display = 'none';
+        return;
+    }
+
+    autoStopStatusRow.style.display = 'flex';
+    autoStopCountdownEl.textContent = `⏱ ${formatDuration(remainingMs)} còn lại`;
+    autoStopClockEl.textContent = `dừng lúc ${new Date(autoStopAt).toLocaleTimeString('vi-VN')}`;
 }
 
 window.addEventListener('message', async (e) => {
@@ -56,6 +100,7 @@ window.addEventListener('message', async (e) => {
         currentDomain = e.data.domain;
         domainLabel.textContent = currentDomain;
         await loadSettings(currentDomain);
+        await refreshAutoStopDisplay(); // show immediately if a countdown is already running (e.g. panel reopened mid-session)
         if (e.data.batchRunning) {
             startBatchBtn.style.display = 'none';
             stopBatchBtn.style.display = 'block';
@@ -127,11 +172,64 @@ window.addEventListener('message', async (e) => {
     }
 });
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
     setupEventListeners();
-    populateModelsFromServer();
+    await loadSpeed(); // independent of local-server/cloud mode — always load
+    await refreshCloudMode();
     sendToContent({ action: 'getPageDomain' });
+    setInterval(refreshAutoStopDisplay, 1000);
 });
+
+// React instantly (not up-to-1s-delayed) when content.js sets/clears the
+// countdown target — e.g. right when auto-stop fires or the user hits Stop.
+// Also react if Cloud TTS get configured/cleared from the popup while this
+// panel is already open.
+chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local') return;
+    if (currentDomain && AUTO_STOP_KEY(currentDomain) in changes) {
+        refreshAutoStopDisplay();
+    }
+    if ('ttsApiUrl' in changes || 'ttsApiSecret' in changes) {
+        refreshCloudMode();
+    }
+});
+
+async function loadSpeed() {
+    const stored = await chrome.storage.local.get({ speed: 1.0 });
+    panelSpeedInput.value = stored.speed;
+    panelSpeedValue.textContent = stored.speed + 'x';
+}
+
+// Cloud TTS (Piper VN / VN phiên âm / VN+EN / Google — set via popup's URL
+// + secret fields) needs no local-server model/voice/lang list at all — a
+// fixed 4-option model picker instead. Only fall back to querying
+// localhost:8000 (and requiring it to be running) when Cloud TTS isn't
+// configured — same reasoning as popup.js's refreshMode(), which this
+// mirrors, since without it the panel got stuck depending on the local
+// server even when only Cloud TTS was actually in use.
+async function isCloudConfigured() {
+    const stored = await chrome.storage.local.get({ ttsApiUrl: '', ttsApiSecret: '' });
+    return !!(stored.ttsApiUrl && stored.ttsApiSecret);
+}
+
+async function refreshCloudMode() {
+    if (await isCloudConfigured()) {
+        ttsModelGroup.style.display = 'flex';
+        ttsModelGroup.style.flexDirection = 'column';
+        localModelGroup.style.display = 'none';
+        localVoiceLangRow.style.display = 'none';
+
+        const stored = await chrome.storage.local.get({ ttsModel: 'piper_vi' });
+        if (Array.from(ttsModelSelectInput.options).some(o => o.value === stored.ttsModel)) {
+            ttsModelSelectInput.value = stored.ttsModel;
+        }
+    } else {
+        ttsModelGroup.style.display = 'none';
+        localModelGroup.style.display = 'flex';
+        localVoiceLangRow.style.display = 'grid';
+        await populateModelsFromServer();
+    }
+}
 
 async function populateModelsFromServer() {
     try {
@@ -150,7 +248,7 @@ async function populateModelsFromServer() {
             panelModelSelect.value = data.default_model;
         }
 
-        const stored = await chrome.storage.local.get({ model: '', voice: '', speed: 1.0, language: '' });
+        const stored = await chrome.storage.local.get({ model: '', voice: '', language: '' });
         if (stored.model && Array.from(panelModelSelect.options).some(o => o.value === stored.model)) {
             panelModelSelect.value = stored.model;
         }
@@ -161,8 +259,6 @@ async function populateModelsFromServer() {
         if (stored.language && Array.from(panelLangSelect.options).some(o => o.value === stored.language)) {
             panelLangSelect.value = stored.language;
         }
-        panelSpeedInput.value = stored.speed;
-        panelSpeedValue.textContent = stored.speed + 'x';
     } catch (e) {
         console.error('Failed to load models:', e);
     }
@@ -211,6 +307,10 @@ function setupEventListeners() {
 
     [panelVoiceSelect, panelLangSelect].forEach(el => el.addEventListener('change', saveTTSSettings));
 
+    ttsModelSelectInput.addEventListener('change', () => {
+        chrome.storage.local.set({ ttsModel: ttsModelSelectInput.value });
+    });
+
     preloadAheadInput.addEventListener('input', () => {
         preloadAheadValue.textContent = preloadAheadInput.value;
     });
@@ -221,7 +321,8 @@ function setupEventListeners() {
             contentSelector: contentSelectorInput.value.trim(),
             ignoreSelector: ignoreSelectorInput.value.trim(),
             autoNextChapter: autoNextChapter.checked,
-            nextChapterSelector: nextChapterSelectorInput.value.trim()
+            nextChapterSelector: nextChapterSelectorInput.value.trim(),
+            autoStopMinutes: parseInt(autoStopMinutesInput.value) || 0
         };
 
         // Save per-domain config
@@ -242,7 +343,7 @@ function setupEventListeners() {
             preloadAhead: parseInt(preloadAheadInput.value),
             contentSelector: contentSelectorInput.value.trim(),
             ignoreSelector: ignoreSelectorInput.value.trim(),
-
+            autoStopMinutes: parseInt(autoStopMinutesInput.value) || 0,
         });
         readAloudBtn.style.display = 'none';
         pauseReadAloudBtn.style.display = 'block';
@@ -313,6 +414,7 @@ async function loadSettings(domain) {
         ignoreSelectorInput.value = cfg.ignoreSelector;
         autoNextChapter.checked = cfg.autoNextChapter;
         nextChapterSelectorInput.value = cfg.nextChapterSelector;
+        autoStopMinutesInput.value = cfg.autoStopMinutes ?? DEFAULTS.autoStopMinutes;
 
         // Tint label green if domain has saved config, grey if using defaults
         domainLabel.style.color = stored[key]

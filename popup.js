@@ -20,16 +20,53 @@ const replayBtn = document.getElementById('replayBtn');
 const getSelectionBtn = document.getElementById('getSelection');
 const getPageBtn = document.getElementById('getPage');
 const clearTextBtn = document.getElementById('clearText');
+const ttsApiUrlInput = document.getElementById('ttsApiUrl');
+const ttsApiSecretInput = document.getElementById('ttsApiSecret');
+const ttsModelSelectInput = document.getElementById('ttsModelSelect');
+const localModelGroup = document.getElementById('localModelGroup');
+const localVoiceGroup = document.getElementById('localVoiceGroup');
+const localLangGroup = document.getElementById('localLangGroup');
 
 let modelsData = {}; // key → { label, voices, voice_labels, languages, language_labels }
 
 document.addEventListener('DOMContentLoaded', async () => {
     await loadPanelToggleState();
-    await populateDropdownsFromServer();
-    await loadSettings();
+    await loadSettings(); // must run first — refreshMode() below depends on ttsApiUrl/ttsApiSecret
+    await refreshMode();
     setupEventListeners();
-    checkServerStatus();
 });
+
+// Cloud TTS (Piper, Vietnamese-only) needs no model/voice/language list from
+// a server — it's a single fixed voice. Only fall back to querying
+// localhost:8000 (and requiring it to be running) when Cloud TTS isn't
+// configured. Without this, the popup got stuck on "Loading models…"
+// forever and Generate Speech stayed disabled whenever the local server
+// wasn't running, even though Cloud TTS alone was enough to generate speech.
+function isCloudConfigured() {
+    return !!(ttsApiUrlInput.value.trim() && ttsApiSecretInput.value.trim());
+}
+
+async function refreshMode() {
+    if (isCloudConfigured()) {
+        // Hide the local-server Model/Voice/Language groups entirely rather
+        // than disabling them with a stale placeholder — a disabled,
+        // greyed-out "Model" dropdown sitting right at the top was easily
+        // mistaken for THE model picker being broken/unusable, when the
+        // real one (ttsModelSelect, below) was just a less prominent
+        // dropdown further down the form.
+        localModelGroup.style.display = 'none';
+        localVoiceGroup.style.display = 'none';
+        localLangGroup.style.display = 'none';
+        speakBtn.disabled = false;
+        showStatus('Using Cloud TTS ✓', 'success');
+    } else {
+        localModelGroup.style.display = 'flex';
+        localVoiceGroup.style.display = 'flex';
+        localLangGroup.style.display = 'flex';
+        await populateDropdownsFromServer();
+        checkServerStatus();
+    }
+}
 
 let _currentTab = null;
 
@@ -128,6 +165,11 @@ function setupEventListeners() {
     });
 
     [voiceSelect, speedInput, langSelect].forEach(el => el.addEventListener('change', saveSettings));
+    [ttsApiUrlInput, ttsApiSecretInput].forEach(el => el.addEventListener('change', async () => {
+        await saveSettings();
+        await refreshMode();
+    }));
+    ttsModelSelectInput.addEventListener('change', saveSettings);
 
     audioPlayer.addEventListener('ended', resetUI);
     audioPlayer.addEventListener('loadstart', showAudioControls);
@@ -169,7 +211,7 @@ function cleanupAudioResources() {
 
 async function loadSettings() {
     try {
-        const r = await browser.storage.local.get({ model: '', voice: '', speed: 1.0, language: '' });
+        const r = await browser.storage.local.get({ model: '', voice: '', speed: 1.0, language: '', ttsApiUrl: '', ttsApiSecret: '', ttsModel: 'piper_vi' });
 
         // Model
         const savedModel = r.model || modelSelect.options[0]?.value || '';
@@ -182,6 +224,12 @@ async function loadSettings() {
 
         speedInput.value = r.speed;
         speedValue.textContent = r.speed + 'x';
+
+        ttsApiUrlInput.value = r.ttsApiUrl;
+        ttsApiSecretInput.value = r.ttsApiSecret;
+        if (Array.from(ttsModelSelectInput.options).some(o => o.value === r.ttsModel)) {
+            ttsModelSelectInput.value = r.ttsModel;
+        }
     } catch (e) { console.error('Failed to load settings:', e); }
 }
 
@@ -191,7 +239,10 @@ async function saveSettings() {
             model: modelSelect.value,
             voice: voiceSelect.value,
             speed: parseFloat(speedInput.value),
-            language: langSelect.value
+            language: langSelect.value,
+            ttsApiUrl: ttsApiUrlInput.value.trim().replace(/\/$/, ''),
+            ttsApiSecret: ttsApiSecretInput.value.trim(),
+            ttsModel: ttsModelSelectInput.value
         });
     } catch (e) { console.error('Failed to save settings:', e); }
 }
@@ -260,14 +311,24 @@ async function generateSpeech() {
     showStatus('Generating speech...', 'loading');
 
     try {
-        const response = await fetch('http://localhost:8000/generate', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                text, model: modelSelect.value, voice: voiceSelect.value,
-                speed: parseFloat(speedInput.value), language: langSelect.value
+        const cloudUrl = ttsApiUrlInput.value.trim().replace(/\/$/, '');
+        const cloudSecret = ttsApiSecretInput.value.trim();
+        const speed = parseFloat(speedInput.value);
+
+        const response = (cloudUrl && cloudSecret)
+            ? await fetch(`${cloudUrl}/tts/generate`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'x-tts-secret': cloudSecret },
+                body: JSON.stringify({ text, speed, model: ttsModelSelectInput.value })
             })
-        });
+            : await fetch('http://localhost:8000/generate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    text, model: modelSelect.value, voice: voiceSelect.value,
+                    speed, language: langSelect.value
+                })
+            });
         if (!response.ok) throw new Error(`Server error: ${response.status}`);
 
         const audioBlob = await response.blob();

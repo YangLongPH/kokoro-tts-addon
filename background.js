@@ -104,10 +104,13 @@ async function speakText(text, tabId) {
             model: 'piper',
             voice: 'vi_default',
             speed: 1.0,
-            language: 'vi'
+            language: 'vi',
+            ttsApiUrl: '',
+            ttsApiSecret: '',
+            ttsModel: 'piper_vi'
         });
 
-        console.log("Background Script: Sending request to TTS server with settings:", settings);
+        console.log("Background Script: Sending request to TTS with settings:", settings);
 
         // Notify content script that speech generation is starting (for in-page notification)
         if (tabId) {
@@ -119,50 +122,39 @@ async function speakText(text, tabId) {
             }
         }
 
-        // Streaming request
-        const response = await fetch('http://localhost:8000/stream', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                text: text.trim(),
-                model: settings.model,
-                voice: settings.voice,
-                speed: settings.speed,
-                language: settings.language
+        // service workers have no URL.createObjectURL/DOM, and the AWS Lambda
+        // path (API Gateway AWS_PROXY) can't stream a response incrementally
+        // anyway — so this always waits for the full audio then plays it in
+        // one shot, same as the Read Aloud / popup Generate Speech flows.
+        const response = (settings.ttsApiUrl && settings.ttsApiSecret)
+            ? await fetch(`${settings.ttsApiUrl}/tts/generate`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'x-tts-secret': settings.ttsApiSecret },
+                body: JSON.stringify({ text: text.trim(), speed: settings.speed, model: settings.ttsModel })
             })
-        });
+            : await fetch('http://localhost:8000/generate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    text: text.trim(),
+                    model: settings.model,
+                    voice: settings.voice,
+                    speed: settings.speed,
+                    language: settings.language
+                })
+            });
 
         if (!response.ok) {
             throw new Error(`Server error: ${response.status}`);
         }
 
-        const reader = response.body.getReader();
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            // Send audio chunk to content script
-            if (tabId) {
-                try {
-                    await browser.tabs.sendMessage(tabId, {
-                        action: 'streamTTSChunk',
-                        chunk: value.buffer // Send ArrayBuffer
-                    });
-                } catch (error) {
-                    console.error("Error streaming chunk:", error);
-                }
-            }
-        }
-        
-        // Signal end of stream
+        const audioData = await response.arrayBuffer();
         if (tabId) {
-            await browser.tabs.sendMessage(tabId, {
-                action: 'streamEnd'
-            });
+            await browser.tabs.sendMessage(tabId, { action: 'playTTSAudio', audioData });
         }
-        
+
     } catch (error) {
-        console.error('TTS Streaming Error:', error);
+        console.error('TTS Error:', error);
         if (tabId) {
             await browser.tabs.sendMessage(tabId, {
                 action: 'streamError',
