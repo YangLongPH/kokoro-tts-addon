@@ -743,11 +743,9 @@
                     <input type="text" id="ttsApiUrl" placeholder="https://xxxx.execute-api.us-east-1.amazonaws.com">
                     <input type="password" id="ttsApiSecret" placeholder="x-tts-secret value">
                     <select id="ttsModelSelect" style="margin-top:6px;">
-                        <option value="piper_vi">Piper VN (1 giọng, ổn định, đọc sai tên tiếng Anh)</option>
-                        <option value="piper_vi_translit">Piper VN phiên âm (1 giọng, tự phiên âm từ tiếng Anh)</option>
-                        <option value="piper_vi_en">Piper VN+EN (2 giọng, đọc đúng tiếng Anh, đổi giọng đột ngột)</option>
-                        <option value="google_tts">Google Cloud TTS (trả phí, chất lượng cao hơn)</option>
-                        <option value="vieneu">VieNeu-TTS (mã nguồn mở, 1 giọng, tự nhiên xử lý VN+EN)</option>
+                        <option value="piper_vi">Piper VN</option>
+                        <option value="google_tts">Google Cloud TTS</option>
+                        <option value="vieneu">VieNeu-TTS</option>
                     </select>
                     <div class="cloud-hint">If set, quick speech (Generate/Read Aloud/context menu) calls this Cloud Run endpoint instead of the local server.</div>
                 </div>
